@@ -12,7 +12,7 @@ pnpm workspace, TypeScript everywhere, deliberately few dependencies.
 shared/     The contract. messages.ts (wire protocol) + tools.ts (tool registry).
             NOT a package — both sides import it by relative path.
 server/     Orchestrator. Node + ws only. `pnpm dev` = tsx watch.
-            prompts/*.md is the persona (Japanese tutor by default) — the
+            prompts/*.md is the persona (English coach by default) — the
             intended customization point. src/prompts.ts loads it and holds the
             non-negotiable delegation/tool mechanics prompts.
 web/        Browser client. Vite + livekit-client + @hyperframes/player.

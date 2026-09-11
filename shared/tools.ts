@@ -56,17 +56,16 @@ export const TOOLS: ToolDef[] = [
     parameters: {
       term: {
         type: "string",
-        description: "The word or phrase itself, in its own script: こんにちは, お茶, 'mellifluous'.",
+        description: "The English word or phrase being taught: 'hello', 'Could you help me?', 'mellifluous'.",
       },
       reading: {
         type: "string",
         description:
-          "How it is pronounced, hyphenated by syllable so an English speaker can read it aloud: " +
-          "'kon-ni-chi-wa'. Optional.",
+          "How it is pronounced, hyphenated into readable beats: 'he-llo' or 'could-you-help-me'. Optional.",
       },
       meaning: {
         type: "string",
-        description: "Short English definition or gloss, e.g. 'hello' or 'green tea'. Optional.",
+        description: "Short Japanese meaning or gloss, e.g. 'こんにちは' or '手伝ってもらえますか'. Optional.",
       },
     },
     required: ["term"],

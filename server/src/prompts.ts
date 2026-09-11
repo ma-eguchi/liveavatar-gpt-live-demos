@@ -93,15 +93,15 @@ export const RESPONSES_INSTRUCTIONS =
   // The tools themselves are REGISTERED via delegation.responses.tools with
   // full schemas and descriptions (shared/tools.ts) — never re-listed here.
   // This prompt only carries the behavioral rules the schemas cannot.
-  "You are the translator behind a live Japanese tutor avatar, and the only part of it that can " +
+  "You are the language coach behind a live English tutor avatar, and the only part of it that can " +
   "put anything on the learner's screen — your tools are the only way. " +
-  "The most common request: the learner names an English word or phrase they want in Japanese. " +
-  "Answer it directly — give the Japanese and say it twice, slowly — and call show_term_card in " +
-  "the same reply: the word in Japanese script (term), a syllable-hyphenated romaji reading, and " +
-  "a short English meaning. " +
-  "MANDATORY: whenever you teach, translate, explain, or correct a word or phrase, call " +
+  "The most common request: the learner names a Japanese word or phrase they want to say in English. " +
+  "Answer it directly — give the English and say it twice, slowly — and call show_term_card in " +
+  "the same reply: the English word or phrase (term), a syllable-hyphenated pronunciation, and " +
+  "a short Japanese meaning. " +
+  "MANDATORY: whenever you teach, translate, explain, or correct an English word or phrase, call " +
   "show_term_card in THIS reply — there is no other way for it to appear on screen, and seeing " +
-  "the word while hearing it is how it sticks. Prefer one card per word; never two cards in the " +
+  "the English word while hearing it is how it sticks. Prefer one card per word; never two cards in the " +
   "same reply. " +
   "Call show_learned_words when the learner asks what they have covered so far, or when a review " +
   "break is called for. Pass only the heading — its tool result returns the exact words now on " +
@@ -116,8 +116,8 @@ export const RESPONSES_INSTRUCTIONS =
  * instructions (LESSON_DIRECTIVE below) — the model owns the pacing from
  * there. It used to be prompted one word at a time with mid-session appends,
  * and that broke the conversation cycle: an append lands as new context the
- * model acts on immediately, so "say it again: こんにちは" became "Now, goodbye
- * is さようなら" in the same breath, the practice loop cut off mid-word.
+ * model acts on immediately, so "say it again: Hello" became "Now, goodbye"
+ * in the same breath, the practice loop cut off mid-word.
  *
  * The card data is here because the SERVER pushes each term card when the
  * tutor is heard saying the word (session.ts) — the model is never asked to
@@ -137,21 +137,21 @@ export interface LessonWord {
 export const LESSON_WORDS: readonly LessonWord[] = [
   {
     english: "Hello",
-    term: "こんにちは",
-    reading: "kon-ni-chi-wa",
-    meaning: "hello",
+    term: "Hello",
+    reading: "he-llo",
+    meaning: "こんにちは",
   },
   {
     english: "Goodbye",
-    term: "さようなら",
-    reading: "sa-yo-u-na-ra",
-    meaning: "goodbye",
+    term: "Goodbye",
+    reading: "good-bye",
+    meaning: "さようなら",
   },
   {
     english: "Thank you",
-    term: "ありがとう",
-    reading: "a-ri-ga-tou",
-    meaning: "thank you",
+    term: "Thank you",
+    reading: "thank-you",
+    meaning: "ありがとう",
   },
 ];
 
@@ -167,16 +167,16 @@ export const LESSON_DIRECTIVE =
     (w, i) => `${i + 1}. ${w.english} — ${w.term} (${w.reading})`,
   ).join("; ") +
   ". " +
-  "Greet the learner as your opening line directs, and once they respond, begin with word 1. " +
+  "Greet the learner as your opening line directs, and once they respond, begin with English word 1. " +
   "Teach ONE word per turn: say it slowly, " +
   "twice, then have the learner say it back and correct them gently. If you're waiting for the learner" +
   "to say it, add in your response: 'try saying it again to really nail it down.'" +
   "Try to avoid ending a turn without giving the learner something to do. Move to the next word only " +
   "after they have tried the current one — never introduce two new words in the same turn. " +
   "When all three are done, tell the learner they can now name ANY word or phrase they would " +
-  "like to hear in Japanese, and ask for their first one. From that point on you are a " +
+  "like to say in English, and ask for their first one. From that point on you are a " +
   "translator: every time they name a word or phrase, delegate that turn to your backend, which " +
-  "translates and answers — then have them say the Japanese back.";
+  "translates and answers — then have them say the English back.";
 
 /**
  * Instruction append when nobody has said anything for a while (the silence

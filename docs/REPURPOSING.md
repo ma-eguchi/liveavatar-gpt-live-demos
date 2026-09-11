@@ -1,6 +1,6 @@
 # Repurposing the Demo
 
-This starter ships as a Japanese tutor, and swapping the domain — support
+This starter ships as an English conversation coach, and swapping the domain — support
 agent, sales rep, museum docent — is the intended use. But "edit
 `server/prompts/*.md` and restart" only re-skins the *persona*. Four areas of
 deliberate, domain-specific behavior live in code, and **they are yours to
@@ -14,12 +14,12 @@ appear in live sessions — has its own doc:
 ## 1. Tutor logic lives outside `prompts/*.md` — the excavation list
 
 Editing only the markdown persona gets you a support avatar that *starts
-teaching Japanese*. The tutor is wired into the mechanics layer in these
+teaching English*. The tutor is wired into the mechanics layer in these
 places; rewrite or remove each one for a new domain:
 
 | Where | What |
 | --- | --- |
-| `server/src/prompts.ts` → `RESPONSES_INSTRUCTIONS` | Hardcodes "You are the translator behind a live Japanese tutor avatar" plus the show_term_card / show_learned_words behavioral rules. Keep the structural clauses (speech + tool in the same reply, speak plainly); replace the domain ones. |
+| `server/src/prompts.ts` → `RESPONSES_INSTRUCTIONS` | Hardcodes the English-coach translation behavior plus the show_term_card / show_learned_words rules. Keep the structural clauses (speech + tool in the same reply, speak plainly); replace the domain ones. |
 | `server/src/prompts.ts` → `LESSON_WORDS`, `LESSON_DIRECTIVE` | The scripted opening curriculum, appended to the live model's instructions **unconditionally** at startup (`gptlive.ts`). Remove or replace with your own opening script. |
 | `server/src/prompts.ts` → `REVIEW_BREAK_PROMPT`, `SILENCE_CHECKIN` | Learner-flavored ("you've got this", "say the word again"). The silence check-in mechanism is worth keeping — reword it. |
 | `server/src/session.ts` → lesson push in `onTurn` | Watches the tutor's transcript for `LESSON_WORDS` and pushes cards server-side. Remove with the lesson — but note it is also the reference implementation of the most reliable visual-trigger pattern (Pattern 1 in MAKING_VISUALS_FIRE.md). |

@@ -1,11 +1,12 @@
-# LiveAvatar × GPT-Live — language demo
+# English Coach × LiveAvatar — GPT-Live language demo
 
 A minimal, readable reference integration: **OpenAI GPT-Live** (a full-duplex
 speech-to-speech model) driving a **HeyGen LiveAvatar** — a realtime voice
 agent with a face, whose tool calls land on screen as animated overlays.
 
-Out of the box it is a **Japanese tutor**: it teaches you words out loud,
-puts a term card (term · pronunciation · meaning) on screen as it says them,
+Out of the box it is an **English conversation coach for Japanese speakers**:
+it teaches useful English words out loud and puts a term card (phrase ·
+pronunciation · Japanese meaning) on screen as it says them,
 and every few words shrinks itself to the corner and reviews everything taught
 so far — a recap panel rendered from the server's own record of the session,
 not the model's memory. The persona is two markdown files (`server/prompts/`)
@@ -60,9 +61,9 @@ No avatar to pick, no prompt to write: a default avatar id ships in
 and the server uses the first public avatar and logs which), and the persona
 ships in `server/prompts/`.
 
-Open http://localhost:5173 → **Start** → allow the mic → talk. The tutor
-greets you, teaches こんにちは, and the term card lands on screen while it
-keeps talking. Say the word back; ask it for another one.
+Open http://localhost:5173 → **Start practicing** → allow the mic → talk. The
+coach greets you in Japanese, teaches Hello, and the term card lands on screen
+while it keeps talking. Say the phrase back; ask it for another one.
 
 To change what the demo is: edit `server/prompts/instructions.md` (who the
 avatar is) and `server/prompts/greeting.md` (how it opens), restart the
@@ -150,8 +151,8 @@ Adding a tool is three small edits — see [`AGENTS.md`](AGENTS.md).
 Render a widget without burning session minutes — from the browser console:
 
 ```js
-window.__ui({ widget: "term_card", props: { term: "こんにちは", reading: "kon-ni-chi-wa", meaning: "hello" } })
-window.__ui({ widget: "learned_words", props: { title: "Words so far", words: [{ term: "こんにちは", reading: "kon-ni-chi-wa", meaning: "hello" }, { term: "お茶", reading: "o-cha", meaning: "tea" }] } })
+window.__ui({ widget: "term_card", props: { term: "Hello", reading: "he-llo", meaning: "こんにちは" } })
+window.__ui({ widget: "learned_words", props: { title: "Words so far", words: [{ term: "Hello", reading: "he-llo", meaning: "こんにちは" }, { term: "Thank you", reading: "thank-you", meaning: "ありがとう" }] } })
 ```
 
 ## Production notes

@@ -297,7 +297,7 @@ patterns that reliably put visuals on screen are their own doc:
 no server), open the app, and drive the widget from the browser console:
 
 ```js
-window.__ui({ widget: "example_sentence", props: { sentence: "お茶をください", translation: "Tea, please." } });
+window.__ui({ widget: "example_sentence", props: { sentence: "Could you help me?", translation: "手伝ってもらえますか" } });
 window.__ui({ widget: "hide", props: {} });
 ```
 

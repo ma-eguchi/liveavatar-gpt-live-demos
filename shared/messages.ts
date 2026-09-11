@@ -16,7 +16,7 @@
  * over the full-frame avatar, which never moves or resizes for it.
  */
 export interface TermCardProps {
-  /** The word or phrase in its own script: こんにちは, お茶. */
+  /** The English word or phrase being practiced: "Hello", "Could you help me?". */
   term: string;
   /** How it is pronounced: "kon-ni-chi-wa". */
   reading?: string;

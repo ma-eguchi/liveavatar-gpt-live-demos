@@ -88,7 +88,7 @@ export class TurnProjector {
       cur.timer = setTimeout(() => this.close(role), this.gapMs);
     }
     // Deltas are joined raw, like OpenAI's reference client: the service
-    // includes its own spacing, and Japanese has none to add.
+    // includes its own spacing, and some languages have none to add.
     cur.text += delta;
     if (endMs !== null) cur.endMs = Math.max(cur.endMs ?? 0, endMs);
     this.sink.onTurn({ id: cur.id, role, text: cur.text, done: false });

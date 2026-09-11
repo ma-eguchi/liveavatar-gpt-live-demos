@@ -364,5 +364,5 @@ stopBtn.addEventListener("click", () => void stop());
 drawMicWave(); // idle stubs before any session
 
 // Dev hook: render a widget without burning session minutes —
-//   window.__ui({ widget: "term_card", props: { term: "こんにちは", reading: "kon-ni-chi-wa", meaning: "hello" } })
+//   window.__ui({ widget: "term_card", props: { term: "Hello", reading: "he-llo", meaning: "こんにちは" } })
 (window as unknown as { __ui: typeof overlays.render }).__ui = overlays.render;
