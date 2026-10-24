@@ -33,12 +33,14 @@ async function post(
   headers: Record<string, string>,
 ): Promise<Record<string, unknown>> {
   const response = await fetch(`${config.liveavatar.apiUrl}${path}`, {
+    signal: AbortSignal.timeout(15_000),
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   const text = await response.text();
-  if (!response.ok) throw new LiveAvatarApiError(response.status, text.slice(0, 500));
+  if (!response.ok)
+    throw new LiveAvatarApiError(response.status, text.slice(0, 500));
   const parsed = JSON.parse(text) as { data?: Record<string, unknown> };
   return parsed.data ?? {};
 }
@@ -53,19 +55,34 @@ async function resolveAvatarId(): Promise<string> {
   if (config.liveavatar.avatarId) return config.liveavatar.avatarId;
   if (fallbackAvatarId) return fallbackAvatarId;
 
-  const response = await fetch(`${config.liveavatar.apiUrl}/v1/avatars/public?page_size=20`);
-  if (!response.ok) throw new Error(`could not list public avatars (${response.status})`);
+  const response = await fetch(
+    `${config.liveavatar.apiUrl}/v1/avatars/public?page_size=20`,
+    { signal: AbortSignal.timeout(15_000) },
+  );
+  if (!response.ok)
+    throw new Error(`could not list public avatars (${response.status})`);
   const body = (await response.json()) as {
-    data?: { results?: { id?: string; name?: string; status?: string; type?: string }[] };
+    data?: {
+      results?: {
+        id?: string;
+        name?: string;
+        status?: string;
+        type?: string;
+      }[];
+    };
   };
   const avatars = body.data?.results ?? [];
   const pick =
     avatars.find((a) => a.status === "ACTIVE" && a.type === "VIDEO") ??
     avatars.find((a) => a.status === "ACTIVE");
   if (!pick?.id) {
-    throw new Error("no public avatar available — set LIVEAVATAR_AVATAR_ID in .env");
+    throw new Error(
+      "no public avatar available — set LIVEAVATAR_AVATAR_ID in .env",
+    );
   }
-  console.log(`[liveavatar] no LIVEAVATAR_AVATAR_ID set — using public avatar "${pick.name}" (${pick.id})`);
+  console.log(
+    `[liveavatar] no LIVEAVATAR_AVATAR_ID set — using public avatar "${pick.name}" (${pick.id})`,
+  );
   fallbackAvatarId = pick.id;
   return pick.id;
 }
@@ -90,14 +107,22 @@ export async function startSession(): Promise<StartedSession> {
   const sessionId = String(token.session_id ?? "");
   const sessionToken = String(token.session_token ?? "");
   if (!sessionId || !sessionToken) {
-    throw new Error("LiveAvatar token mint returned no session_id/session_token");
+    throw new Error(
+      "LiveAvatar token mint returned no session_id/session_token",
+    );
   }
 
-  const started = await post(
-    "/v1/sessions/start",
-    {},
-    { Authorization: `Bearer ${sessionToken}` },
-  );
+  let started: Record<string, unknown>;
+  try {
+    started = await post(
+      "/v1/sessions/start",
+      {},
+      { Authorization: `Bearer ${sessionToken}` },
+    );
+  } catch (error) {
+    await stopSession(sessionId).catch(() => {});
+    throw error;
+  }
   const livekitUrl = String(started.livekit_url ?? "");
   const livekitClientToken = String(started.livekit_client_token ?? "");
   const wsUrl = String(started.ws_url ?? "");
@@ -106,7 +131,9 @@ export async function startSession(): Promise<StartedSession> {
     // means the payload drifted. Fail loudly rather than hand out a session
     // the legs cannot work with — but release the upstream slot first.
     await stopSession(sessionId).catch(() => {});
-    throw new Error(`session ${sessionId} started without livekit_url/livekit_client_token/ws_url`);
+    throw new Error(
+      `session ${sessionId} started without livekit_url/livekit_client_token/ws_url`,
+    );
   }
 
   return { sessionId, livekitUrl, livekitClientToken, wsUrl };

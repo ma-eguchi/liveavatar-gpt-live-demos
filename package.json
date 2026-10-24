@@ -1,22 +1,27 @@
 {
-  "name": "liveavatar-language-demo",
+  "name": "sales-rehearsal",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/heygen-com/liveavatar-language-demo.git"
+    "url": "https://github.com/ma-eguchi/liveavatar-gpt-live-demos.git"
   },
-  "description": "Language-tutor reference integration: OpenAI GPT-Live driving a HeyGen LiveAvatar, with tool calls rendered as on-screen term cards.",
+  "description": "Japanese sales rehearsal with a live customer avatar powered by GPT-Live.",
   "scripts": {
     "setup": "node scripts/setup.mjs",
-    "dev": "node scripts/check-env.mjs && pnpm --parallel -r dev",
+    "dev": "pnpm --parallel -r dev",
     "build": "pnpm -r build",
     "start": "node scripts/check-env.mjs && pnpm --filter server start",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter server test && node --test tests/http.mjs",
+    "test:e2e": "node --test tests/e2e.mjs"
   },
   "engines": {
     "node": ">=20.12"
   },
-  "packageManager": "pnpm@9.0.0"
+  "packageManager": "pnpm@9.0.0",
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
 }

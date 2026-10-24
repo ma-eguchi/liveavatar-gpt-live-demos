@@ -5,10 +5,11 @@ import { defineConfig } from "vite";
 // production the server serves web/dist itself.
 export default defineConfig({
   server: {
+    host: "127.0.0.1",
     port: 5173,
     proxy: {
-      "/api": "http://localhost:8787",
-      "/ws": { target: "ws://localhost:8787", ws: true },
+      "/api": "http://127.0.0.1:8787",
+      "/ws": { target: "ws://127.0.0.1:8787", ws: true },
     },
   },
 });

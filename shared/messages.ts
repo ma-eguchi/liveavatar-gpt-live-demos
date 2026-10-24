@@ -63,11 +63,14 @@ export interface Turn {
   role: "user" | "assistant";
   text: string;
   done: boolean;
+  uncertain?: boolean;
 }
 
 /** Server → browser. */
 export type ServerMessage =
   | { type: "ready" }
+  | { type: "started"; startedAt: number; deadline: number }
+  | { type: "ended"; reason: string }
   | ({ type: "turn" } & Turn)
   | ({ type: "ui" } & UiMessage)
   /** The avatar was cut off mid-sentence; what it was saying is never coming. */
@@ -78,4 +81,5 @@ export type ServerMessage =
 export type ClientMessage =
   /** Base64 PCM16 mono @ 24kHz, produced by the AudioWorklet in micCapture.ts. */
   | { type: "mic_audio"; audio: string }
+  | { type: "begin" }
   | { type: "stop" };

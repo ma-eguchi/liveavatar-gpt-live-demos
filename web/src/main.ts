@@ -1,368 +1,496 @@
-/**
- * Owns one session end to end: start → LiveKit join → websocket → mic, and the
- * teardown of all four in the right order.
- *
- * Ordering matters on the way up: the mic only starts once the server says
- * `ready`, because audio sent before GPT-Live's session exists is discarded.
- *
- * Startup is guarded by a generation counter: every await below is a window in
- * which the user can hit Stop or the socket can drop, and a stale start must
- * not re-attach resources that teardown already released.
- */
-
-// Registers the <hyperframes-player> custom element used for overlays.
-import "@hyperframes/player";
+import "./style.css";
 import type { Turn } from "../../shared/messages";
-import { joinAvatarRoom, type AvatarRoom } from "./livekitRoom";
+import type {
+  RehearsalResult,
+  RehearsalSettings,
+  StartRehearsalResponse,
+} from "../../shared/rehearsal";
 import { startMicCapture, type MicCapture } from "./micCapture";
-import { createOverlays } from "./overlays/index";
+import { joinAvatarRoom, type AvatarRoom } from "./livekitRoom";
 import { openSessionSocket, type SessionSocket } from "./socket";
 
-const video = document.getElementById("video") as HTMLVideoElement;
-const audio = document.getElementById("audio") as HTMLAudioElement;
-const stage = document.getElementById("stage") as HTMLDivElement;
-const player = document.getElementById("overlay-player") as HTMLElement;
-const startBtn = document.getElementById("start") as HTMLButtonElement;
-const stopBtn = document.getElementById("stop") as HTMLButtonElement;
-const statusEl = document.getElementById("status") as HTMLDivElement;
-const transcriptEl = document.getElementById("transcript") as HTMLDivElement;
-const loaderLabel = document.getElementById("loader-label") as HTMLSpanElement;
-const micBtn = document.getElementById("mic") as HTMLButtonElement;
-
-type StatusKind = "idle" | "busy" | "live" | "error";
-const setStatus = (msg: string, kind: StatusKind = "idle") => {
-  statusEl.textContent = msg;
-  statusEl.dataset.kind = kind;
-  // The in-stage loader narrates the same steps while the video is still dark.
-  if (stage.dataset.state === "connecting") loaderLabel.textContent = msg;
-};
-
-/** idle → hero visible; connecting → loader; live → video (see index.html). */
-const setStage = (state: "idle" | "connecting" | "live") => {
-  stage.dataset.state = state;
-};
-
-const overlays = createOverlays({ stage, player, onStatus: (msg) => setStatus(msg, "error") });
-
-// ── transcript ────────────────────────────────────────────────────────────────
-// One line per turn, keyed by turn id: streaming updates rewrite the line in
-// place, and a new id starts a new line.
-
-const turnLines = new Map<string, { line: HTMLDivElement; text: HTMLSpanElement }>();
-let lastAssistantLine: HTMLDivElement | null = null;
-
-function upsertTurn(turn: Turn): void {
-  let entry = turnLines.get(turn.id);
-  if (!entry) {
-    const line = document.createElement("div");
-    line.className = `turn ${turn.role}`;
-    const who = document.createElement("span");
-    who.className = "who";
-    who.textContent = turn.role === "user" ? "You" : "Avatar";
-    const text = document.createElement("span");
-    text.className = "text";
-    line.append(who, text);
-    transcriptEl.appendChild(line);
-    entry = { line, text };
-    turnLines.set(turn.id, entry);
-  }
-  entry.text.textContent = turn.text;
-  if (turn.role === "assistant") lastAssistantLine = entry.line;
-  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+const el = <T extends HTMLElement = HTMLElement>(id: string) =>
+  document.getElementById(id) as T;
+const form = el<HTMLFormElement>("settings-form");
+const video = el<HTMLVideoElement>("video");
+const audio = el<HTMLAudioElement>("audio");
+interface Attempt {
+  controller: AbortController;
+  canceled: boolean;
+  finishing: boolean;
+  streaming: boolean;
+  begun: boolean;
+  ready: boolean;
+  mic?: MicCapture;
+  room?: AvatarRoom;
+  socket?: SessionSocket;
+  session?: StartRehearsalResponse;
+  turns: Map<string, Turn>;
+  settings: RehearsalSettings;
+  startedAt: number | null;
+  deadline: number | null;
+  timeout?: ReturnType<typeof setTimeout>;
 }
-
-// ── liveness ──────────────────────────────────────────────────────────────────
-// Two indicators, one rAF loop: the mic meter is fed by the capture path
-// (micCapture's onLevel — the meter shows exactly what ships), and the
-// speaking glow is measured off the avatar's LiveKit audio with an
-// AnalyserNode listening alongside the element, which keeps playing untouched.
-
-// Mic bars: a frequency visualizer on the button's canvas — each bar averages
-// a slice of the analyser's FFT (speech band), redrawn every frame. Muting
-// flattens it on its own — the disabled track renders silence into the
-// analyser (see micCapture).
-const waveCanvas = micBtn.querySelector(".wave") as HTMLCanvasElement;
-const waveCtx = waveCanvas.getContext("2d") as CanvasRenderingContext2D;
-let micAnalyser: AnalyserNode | null = null;
-let micFreqBuf: Uint8Array<ArrayBuffer> | null = null;
-
-const BAR_COUNT = 7;
-const BINS_PER_BAR = 6; // fftSize 512 @ 48k → ~94Hz/bin: 7×6 bins ≈ 0–4kHz, the speech band
-
-function drawMicWave(): void {
-  const w = waveCanvas.width;
-  const h = waveCanvas.height;
-  waveCtx.clearRect(0, 0, w, h);
-  const live = micAnalyser && micFreqBuf && !micMuted;
-  if (live) {
-    micAnalyser!.getByteFrequencyData(micFreqBuf!);
-    const grad = waveCtx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, "#b98cff");
-    grad.addColorStop(1, "#6ea8ff");
-    waveCtx.fillStyle = grad;
-  } else {
-    waveCtx.fillStyle = "#5a6577";
-  }
-  const barW = 6;
-  const gap = (w - BAR_COUNT * barW) / (BAR_COUNT - 1);
-  for (let i = 0; i < BAR_COUNT; i++) {
-    let level = 0;
-    if (live) {
-      let sum = 0;
-      for (let j = 0; j < BINS_PER_BAR; j++) {
-        sum += micFreqBuf![1 + i * BINS_PER_BAR + j] ?? 0; // skip the DC bin
-      }
-      level = Math.min(1, (sum / BINS_PER_BAR / 255) * 1.4);
-    }
-    const barH = 6 + level * (h - 6);
-    const x = i * (barW + gap);
-    waveCtx.beginPath();
-    waveCtx.roundRect(x, (h - barH) / 2, barW, barH, 3);
-    waveCtx.fill();
-  }
+let active: Attempt | null = null;
+let last: {
+  session: StartRehearsalResponse;
+  settings: RehearsalSettings;
+} | null = null;
+let muted = false;
+let resultGeneration = 0;
+let resultController: AbortController | null = null;
+function invalidateResult() {
+  resultGeneration++;
+  resultController?.abort();
+  resultController = null;
 }
-
-let speakCtx: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
-let analyserBuf: Uint8Array<ArrayBuffer> | null = null;
-let analysedStream: MediaStream | null = null;
-let quietSince = 0;
-let uiRaf = 0;
-
-audio.addEventListener("playing", () => {
-  const stream = audio.srcObject;
-  if (!(stream instanceof MediaStream) || stream === analysedStream) return;
-  void speakCtx?.close();
-  speakCtx = new AudioContext();
-  analyser = speakCtx.createAnalyser();
-  analyser.fftSize = 512;
-  speakCtx.createMediaStreamSource(stream).connect(analyser);
-  analyserBuf = new Uint8Array(analyser.fftSize);
-  analysedStream = stream;
-});
-
-function uiTick(now: number): void {
-  drawMicWave();
-
-  if (analyser && analyserBuf) {
-    analyser.getByteTimeDomainData(analyserBuf);
-    let sum = 0;
-    for (let i = 0; i < analyserBuf.length; i++) {
-      const v = ((analyserBuf[i] ?? 128) - 128) / 128;
-      sum += v * v;
-    }
-    if (Math.sqrt(sum / analyserBuf.length) > 0.03) {
-      quietSince = 0;
-      stage.dataset.speaking = "";
-    } else {
-      quietSince ||= now;
-      // Half a second of hush before the glow drops — pauses between words
-      // must not flicker it.
-      if (now - quietSince > 500) delete stage.dataset.speaking;
-    }
-  }
-  uiRaf = requestAnimationFrame(uiTick);
+const clock = (seconds: number) =>
+  `${Math.floor(Math.max(0, seconds) / 60)
+    .toString()
+    .padStart(2, "0")}:${Math.floor(Math.max(0, seconds) % 60)
+    .toString()
+    .padStart(2, "0")}`;
+function notice(message = "") {
+  el("notice").textContent = message;
+  el("notice").hidden = !message;
 }
-
-function stopLiveness(): void {
-  cancelAnimationFrame(uiRaf);
-  uiRaf = 0;
-  micBtn.disabled = true;
-  setMicMuted(false);
-  micAnalyser = null;
-  micFreqBuf = null;
-  drawMicWave(); // leave idle stubs, not the last frame of speech
-  delete stage.dataset.speaking;
-  void speakCtx?.close();
-  speakCtx = null;
-  analyser = null;
-  analyserBuf = null;
-  analysedStream = null;
-  quietSince = 0;
-}
-
-// The stage goes live on the first decoded frame, not on join — so the video
-// fades in with a face already in it.
-video.addEventListener("playing", () => {
-  if (stage.dataset.state === "connecting") setStage("live");
-});
-
-// ── mic mute ──────────────────────────────────────────────────────────────────
-// Muting disables the track (micCapture.setMuted) — silence keeps streaming,
-// so the model still hears a continuous feed. The button reflects it via
-// data-muted (red tint, flat bars, slashed icon).
-
-let micMuted = false;
-
-function setMicMuted(muted: boolean): void {
-  micMuted = muted;
-  mic?.setMuted(muted);
-  if (muted) micBtn.dataset.muted = "";
-  else delete micBtn.dataset.muted;
-  micBtn.setAttribute("aria-pressed", String(muted));
-  const label = muted ? "Unmute microphone" : "Mute microphone";
-  micBtn.title = label;
-  micBtn.setAttribute("aria-label", label);
-}
-
-micBtn.addEventListener("click", () => {
-  if (mic) setMicMuted(!micMuted);
-});
-
-// ── session lifecycle ─────────────────────────────────────────────────────────
-
-let sessionId: string | null = null;
-let socket: SessionSocket | null = null;
-let room: AvatarRoom | null = null;
-let mic: MicCapture | null = null;
-let generation = 0;
-let stopping = false;
-
-async function start(): Promise<void> {
-  const myGeneration = ++generation;
-  const superseded = () => generation !== myGeneration;
-
-  startBtn.disabled = true;
-  setStage("connecting");
-  setStatus("starting session…", "busy");
-  uiRaf ||= requestAnimationFrame(uiTick);
-
-  let started: {
-    session_id: string;
-    livekit_url: string;
-    livekit_client_token: string;
-    ws_path: string;
-    error?: string;
-  };
-  try {
-    const response = await fetch("/api/session/start", { method: "POST" });
-    started = (await response.json()) as typeof started;
-    if (!response.ok) throw new Error(started.error ?? "could not start a session");
-  } catch (err) {
-    setStage("idle");
-    setStatus(err instanceof Error ? err.message : "could not start a session", "error");
-    startBtn.disabled = false;
-    return;
-  }
-
-  // Cancelled while the mint was in flight: the session is real and billable,
-  // so release it rather than letting the idle watchdog do it.
-  if (superseded()) {
-    void endOnServer(started.session_id);
-    return;
-  }
-  sessionId = started.session_id;
-
-  setStatus("connecting to the avatar…", "busy");
-  try {
-    room = await joinAvatarRoom(started.livekit_url, started.livekit_client_token, {
-      video,
-      audio,
-    });
-  } catch (err) {
-    await stop(err instanceof Error ? err.message : "could not reach the avatar", "error");
-    return;
-  }
-  if (superseded()) return;
-
-  socket = openSessionSocket(started.ws_path, {
-    onReady: () => {
-      if (superseded()) return;
-      setStatus("listening — just start talking", "live");
-      stopBtn.disabled = false;
-      void startMicCapture((base64) => socket?.sendMicAudio(base64))
-        .then((capture) => {
-          // getUserMedia takes real time; if the session ended in that window,
-          // storing this would leave the mic light on with nothing to turn it
-          // off.
-          if (superseded()) {
-            capture.stop();
-            return;
-          }
-          mic = capture;
-          micAnalyser = capture.analyser;
-          micFreqBuf = new Uint8Array(capture.analyser.frequencyBinCount);
-          micBtn.disabled = false;
-        })
-        .catch((err: unknown) => {
-          setStatus(
-            err instanceof Error ? `microphone unavailable: ${err.message}` : "microphone unavailable",
-            "error",
-          );
-        });
-    },
-    onTurn: upsertTurn,
-    onUi: overlays.render,
-    onInterrupted: () => {
-      // The rest of that sentence is never coming — reflect it rather than
-      // leave a transcript that claims words nobody heard.
-      lastAssistantLine?.classList.add("interrupted");
-    },
-    onError: (message) => setStatus(message, "error"),
-    onClose: () => {
-      if (!stopping) void stop("the session ended");
-    },
+function screen(name: "setup" | "rehearsal" | "review") {
+  invalidateResult();
+  for (const id of ["setup", "rehearsal", "review"])
+    el(id).hidden = id !== name;
+  document.querySelectorAll<HTMLElement>("[data-step]").forEach((step) => {
+    if (step.dataset.step === name) step.setAttribute("aria-current", "step");
+    else step.removeAttribute("aria-current");
   });
+  el(`${name}-title`).focus({ preventScroll: true });
+  window.scrollTo(0, 0);
 }
-
-async function stop(reason?: string, kind: StatusKind = "idle"): Promise<void> {
-  generation += 1; // cancel any in-flight start
-  if (stopping) return;
-  stopping = true;
-  stopBtn.disabled = true;
-
-  mic?.stop();
-  mic = null;
-  socket?.close();
-  socket = null;
-  await room?.disconnect();
-  room = null;
-  overlays.hideAll();
-  stopLiveness();
-  // The transcript lives exactly as long as the session: cleared here (its
-  // #transcript:empty rule hides the container), not on start.
-  transcriptEl.textContent = "";
-  turnLines.clear();
-  lastAssistantLine = null;
-
-  const id = sessionId;
-  sessionId = null;
-  if (id) void endOnServer(id);
-
-  setStage("idle");
-  setStatus(reason ?? "idle", kind);
-  startBtn.disabled = false;
-  stopping = false;
+function settings(): RehearsalSettings {
+  return {
+    productName: el<HTMLInputElement>("product-name").value.trim(),
+    productDescription: el<HTMLTextAreaElement>(
+      "product-description",
+    ).value.trim(),
+    customerContext: el<HTMLTextAreaElement>("customer-context").value.trim(),
+  };
 }
-
-async function endOnServer(id: string): Promise<void> {
+function renderTurns(target: string, turns: Turn[]) {
+  const container = el(target);
+  const pinned =
+    container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+  container.replaceChildren(
+    ...turns.map((turn) => {
+      const item = document.createElement("div");
+      item.className = `turn ${turn.role}`;
+      const who = document.createElement("strong");
+      who.textContent = turn.role === "user" ? "あなた" : "顧客役";
+      const text = document.createElement("p");
+      text.textContent = turn.text;
+      item.append(who, text);
+      if (!turn.done || turn.uncertain) {
+        const note = document.createElement("small");
+        note.textContent = "発言の途中・未確定の記録";
+        item.append(note);
+      }
+      return item;
+    }),
+  );
+  if (pinned) container.scrollTop = container.scrollHeight;
+}
+async function json<T>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 10000,
+): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(abort, timeoutMs);
   try {
-    await fetch("/api/session/stop", {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    const data = (await response.json().catch((error) => {
+      if (controller.signal.aborted) throw error;
+      return {};
+    })) as { error?: string };
+    if (!response.ok)
+      throw new Error(
+        data.error || "通信に失敗しました。接続を確認して再試行してください。",
+      );
+    return data as T;
+  } catch (error) {
+    if (controller.signal.aborted)
+      throw new Error(
+        "通信が時間内に完了しませんでした。接続を確認して再試行してください。",
+      );
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abort);
+  }
+}
+function stopRemote(session: StartRehearsalResponse) {
+  return json(
+    "/api/session/stop",
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: id }),
+      body: JSON.stringify({
+        session_id: session.session_id,
+        accessToken: session.accessToken,
+      }),
+      keepalive: true,
+    },
+    35000,
+  );
+}
+function release(attempt: Attempt) {
+  attempt.streaming = false;
+  attempt.controller.abort();
+  clearTimeout(attempt.timeout);
+  attempt.mic?.stop();
+  attempt.mic = undefined;
+  attempt.socket?.close();
+  attempt.socket = undefined;
+  void attempt.room?.disconnect().catch(() => {});
+  attempt.room = undefined;
+  audio.pause();
+  video.pause();
+  audio.srcObject = null;
+  video.srcObject = null;
+}
+function begin(attempt: Attempt) {
+  if (
+    attempt.canceled ||
+    attempt.finishing ||
+    attempt.begun ||
+    !attempt.ready ||
+    !attempt.room ||
+    !attempt.mic
+  )
+    return;
+  attempt.begun = true;
+  attempt.socket?.begin();
+}
+async function launch(retry = false) {
+  if (active) return;
+  notice();
+  const currentSettings = retry && last ? last.settings : settings();
+  if (!currentSettings.productName || !currentSettings.productDescription) {
+    notice("商材名と、解決する課題を入力してください。");
+    return;
+  }
+  const attempt: Attempt = {
+    controller: new AbortController(),
+    canceled: false,
+    finishing: false,
+    streaming: false,
+    begun: false,
+    ready: false,
+    turns: new Map(),
+    settings: currentSettings,
+    startedAt: null,
+    deadline: null,
+  };
+  active = attempt;
+  muted = false;
+  el<HTMLButtonElement>("start").disabled = true;
+  el<HTMLButtonElement>("mute").disabled = true;
+  el("mute").textContent = "ミュート";
+  el("mute").setAttribute("aria-pressed", "false");
+  el("end").textContent = "接続をキャンセル";
+  el<HTMLButtonElement>("end").disabled = false;
+  el("connecting").hidden = false;
+  el("connection-label").textContent = "マイクを確認しています";
+  el("mic-status").textContent = "マイク確認中";
+  el("stage-status").textContent = "接続準備中";
+  el("customer-name").textContent = "顧客役を準備中";
+  el("customer-role").textContent = "";
+  el("customer-situation").textContent = "";
+  el("time").textContent = "05:00";
+  el("enable-audio").hidden = true;
+  renderTurns("live-transcript", []);
+  screen("rehearsal");
+  attempt.timeout = setTimeout(() => {
+    if (active === attempt && !attempt.streaming)
+      void finish(
+        attempt,
+        "接続が時間内に完了しませんでした。もう一度お試しください。",
+      );
+  }, 90000);
+  try {
+    const config = await json<{ configured: boolean; missing: string[] }>(
+      "/api/config",
+    );
+    if (attempt.canceled) return;
+    if (!config.configured)
+      throw new Error(
+        `接続の設定が必要です。サーバーの .env に ${config.missing.join("、")} を設定して再起動してください。`,
+      );
+    const mic = await startMicCapture(
+      (chunk) => {
+        if (attempt.streaming && !attempt.canceled)
+          attempt.socket?.sendMicAudio(chunk);
+      },
+      (level) => {
+        if (active === attempt)
+          el("level").style.opacity = String(
+            0.35 + Math.min(1, level * 10) * 0.65,
+          );
+      },
+    );
+    if (attempt.canceled) {
+      mic.stop();
+      return;
+    }
+    attempt.mic = mic;
+    el("mic-status").textContent = "マイク接続済み";
+    el("connection-label").textContent = "顧客役に接続しています";
+    const session = await json<StartRehearsalResponse>(
+      "/api/session/start",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          settings: currentSettings,
+          ...(retry && last
+            ? {
+                previousAttemptId: last.session.attemptId,
+                previousAccessToken: last.session.accessToken,
+              }
+            : {}),
+        }),
+      },
+      45000,
+    );
+    if (attempt.canceled) {
+      await stopRemote(session);
+      return;
+    }
+    attempt.session = session;
+    el("customer-name").textContent = session.customer.name;
+    el("customer-role").textContent = session.customer.role;
+    el("customer-situation").textContent = session.customer.situation;
+    attempt.socket = openSessionSocket(session.ws_path, {
+      onReady: () => {
+        attempt.ready = true;
+        begin(attempt);
+      },
+      onStarted: (startedAt, deadline) => {
+        if (attempt.canceled || attempt.finishing) return;
+        clearTimeout(attempt.timeout);
+        attempt.startedAt = startedAt;
+        attempt.deadline = deadline;
+        attempt.streaming = true;
+        el("connecting").hidden = true;
+        el("stage-status").textContent = "会話中";
+        el("mic-status").textContent = "マイク ON";
+        el("end").textContent = "終了して振り返る";
+        el<HTMLButtonElement>("mute").disabled = false;
+        void audio.play().catch(() => {
+          if (active === attempt) el("enable-audio").hidden = false;
+        });
+      },
+      onEnded: () => {
+        void finish(attempt);
+      },
+      onTurn: (turn) => {
+        if (!attempt.canceled) {
+          attempt.turns.set(turn.id, turn);
+          renderTurns("live-transcript", [...attempt.turns.values()]);
+        }
+      },
+      onUi: () => {},
+      onInterrupted: () => {},
+      onError: () => {
+        void finish(
+          attempt,
+          "会話への接続に問題が発生しました。記録を確認して、再度お試しください。",
+        );
+      },
+      onClose: () => {
+        void finish(attempt, "通信が切断されたため、練習を終了しました。");
+      },
     });
-  } catch {
-    // The server reaps the session on its own; nothing to recover here.
+    const room = await joinAvatarRoom(
+      session.livekit_url,
+      session.livekit_client_token,
+      { video, audio },
+      attempt.controller.signal,
+    );
+    if (attempt.canceled || attempt.finishing) {
+      await room.disconnect();
+      return;
+    }
+    attempt.room = room;
+    begin(attempt);
+  } catch (error) {
+    if (!attempt.canceled)
+      await finish(
+        attempt,
+        error instanceof DOMException && error.name === "NotAllowedError"
+          ? "マイクの利用を許可してください。ブラウザのサイト設定から変更できます。"
+          : error instanceof Error
+            ? error.message
+            : "接続を開始できませんでした。",
+      );
   }
 }
-
-// A tab closing mid-session would otherwise leave the session running (and
-// billing) until the server's idle watchdog reaps it. Only sendBeacon survives
-// unload; fetch is cancelled.
-window.addEventListener("pagehide", () => {
-  if (!sessionId) return;
-  navigator.sendBeacon?.(
-    "/api/session/stop",
-    new Blob([JSON.stringify({ session_id: sessionId })], { type: "application/json" }),
-  );
+async function finish(attempt: Attempt, message = "") {
+  if (attempt.finishing || attempt.canceled) return;
+  attempt.finishing = true;
+  attempt.canceled = true;
+  release(attempt);
+  el<HTMLButtonElement>("end").disabled = true;
+  if (message) notice(message);
+  if (!attempt.session) {
+    active = null;
+    el<HTMLButtonElement>("start").disabled = false;
+    screen("setup");
+    return;
+  }
+  last = { session: attempt.session, settings: attempt.settings };
+  screen("review");
+  el("result-status").textContent =
+    "接続を終了し、会話の記録を確認しています。";
+  el("duration").textContent = attempt.startedAt
+    ? clock((Date.now() - attempt.startedAt) / 1000)
+    : "00:00";
+  el<HTMLButtonElement>("retry").disabled = true;
+  el<HTMLButtonElement>("edit-settings").disabled = true;
+  renderTurns("review-transcript", [...attempt.turns.values()]);
+  try {
+    try {
+      await stopRemote(attempt.session);
+    } catch {
+      notice("終了の確認ができませんでした。会話の記録は再取得できます。");
+    }
+    await loadResult(attempt.session);
+  } finally {
+    if (active === attempt) {
+      active = null;
+      el<HTMLButtonElement>("start").disabled = false;
+      el<HTMLButtonElement>("edit-settings").disabled = false;
+    }
+  }
+}
+async function loadResult(session: StartRehearsalResponse) {
+  invalidateResult();
+  const generation = resultGeneration;
+  const controller = new AbortController();
+  resultController = controller;
+  const current = () =>
+    generation === resultGeneration &&
+    last?.session.attemptId === session.attemptId &&
+    !el("review").hidden;
+  el("reload-result").hidden = true;
+  try {
+    const result = await json<RehearsalResult>(
+      `/api/rehearsals/${encodeURIComponent(session.attemptId)}`,
+      {
+        headers: { Authorization: `Bearer ${session.accessToken}` },
+        signal: controller.signal,
+      },
+    );
+    if (!current()) return;
+    renderTurns("review-transcript", result.turns);
+    el("duration").textContent = result.startedAt
+      ? clock(((result.endedAt ?? Date.now()) - result.startedAt) / 1000)
+      : "00:00";
+    const ended =
+      result.status === "completed" || result.status === "incomplete";
+    el("result-status").textContent =
+      result.status === "completed"
+        ? "おつかれさまでした。会話を読み返し、次の練習につなげましょう。"
+        : ended
+          ? "途中までの会話記録です。振り返りにお使いください。"
+          : "終了処理中です。少し待って記録を再取得してください。";
+    el<HTMLButtonElement>("retry").disabled = !ended;
+    el("reload-result").hidden = ended;
+  } catch {
+    if (!current()) return;
+    el("result-status").textContent =
+      "保存済みの記録を取得できませんでした。画面に残っていた記録を表示しています（不完全な場合があります）。";
+    el("reload-result").hidden = false;
+    el<HTMLButtonElement>("retry").disabled = true;
+  } finally {
+    if (resultController === controller) resultController = null;
+  }
+}
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void launch();
 });
-
-startBtn.addEventListener("click", () => void start());
-stopBtn.addEventListener("click", () => void stop());
-
-drawMicWave(); // idle stubs before any session
-
-// Dev hook: render a widget without burning session minutes —
-//   window.__ui({ widget: "term_card", props: { term: "こんにちは", reading: "kon-ni-chi-wa", meaning: "hello" } })
-(window as unknown as { __ui: typeof overlays.render }).__ui = overlays.render;
+el("sample").addEventListener("click", () => {
+  el<HTMLInputElement>("product-name").value = "営業チーム向け案件管理サービス";
+  el<HTMLTextAreaElement>("product-description").value =
+    "メールやExcelに分散した案件情報を一元管理し、営業責任者の進捗確認や報告の時間を減らします。";
+  el<HTMLTextAreaElement>("customer-context").value =
+    "従業員50人の企業の営業責任者。営業担当は8人。現在はExcelで案件を管理している。";
+  el("product-name").focus();
+});
+el("end").addEventListener("click", () => {
+  if (active) void finish(active);
+});
+el("retry").addEventListener("click", () => {
+  void launch(true);
+});
+el("edit-settings").addEventListener("click", () => {
+  notice();
+  screen("setup");
+});
+el("reload-result").addEventListener("click", () => {
+  if (last) void loadResult(last.session);
+});
+el("mute").addEventListener("click", () => {
+  if (!active?.streaming) return;
+  muted = !muted;
+  active.mic?.setMuted(muted);
+  el("mute").setAttribute("aria-pressed", String(muted));
+  el("mute").textContent = muted ? "ミュート解除" : "ミュート";
+  el("mic-status").textContent = muted ? "マイク OFF" : "マイク ON";
+});
+el("enable-audio").addEventListener("click", () => {
+  void audio
+    .play()
+    .then(() => {
+      el("enable-audio").hidden = true;
+    })
+    .catch(() =>
+      notice(
+        "音声を再生できませんでした。ブラウザの音声設定を確認してください。",
+      ),
+    );
+});
+setInterval(() => {
+  if (active?.deadline && active.streaming) {
+    const remaining = Math.max(
+      0,
+      Math.ceil((active.deadline - Date.now()) / 1000),
+    );
+    el("time").textContent = clock(remaining);
+    el("time").parentElement?.classList.toggle("urgent", remaining <= 30);
+  }
+}, 500);
+window.addEventListener("pagehide", () => {
+  if (!active) return;
+  active.canceled = true;
+  release(active);
+  if (active.session) void stopRemote(active.session).catch(() => {});
+});
+screen("setup");
+void json<{ configured: boolean; missing: string[] }>("/api/config")
+  .then((config) => {
+    if (!config.configured && !active)
+      notice(
+        `会話を始めるには接続設定が必要です。サーバーの .env に ${config.missing.join("、")} を設定してください。商談の入力は先にお試しいただけます。`,
+      );
+  })
+  .catch(() =>
+    notice(
+      "サーバーに接続できません。サーバーを起動してから再度お試しください。",
+    ),
+  );

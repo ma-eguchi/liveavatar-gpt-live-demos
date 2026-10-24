@@ -74,76 +74,88 @@ export async function startMicCapture(
     },
   });
 
-  const audioContext = new AudioContext();
-  // Chrome starts a context suspended unless it was created inside a user
-  // gesture. This one is created after `await getUserMedia`, which has already
-  // left the gesture's call stack — without the resume the worklet is never
-  // pumped: no frames, no error, an avatar that simply cannot hear you.
-  if (audioContext.state === "suspended") {
-    await audioContext.resume();
-  }
-
-  const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
-  const url = URL.createObjectURL(blob);
+  let audioContext: AudioContext;
   try {
-    await audioContext.audioWorklet.addModule(url);
-  } finally {
-    URL.revokeObjectURL(url);
+    audioContext = new AudioContext();
+  } catch (error) {
+    stream.getTracks().forEach((t) => t.stop());
+    throw error;
   }
-
-  const source = audioContext.createMediaStreamSource(stream);
-  const worklet = new AudioWorkletNode(audioContext, "pcm-downsampler", {
-    numberOfInputs: 1,
-    numberOfOutputs: 1,
-    outputChannelCount: [1],
-    processorOptions: { targetRate: TARGET_SAMPLE_RATE },
-  });
-
-  worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-    const bytes = new Uint8Array(e.data);
-    if (bytes.length === 0) return;
-    if (onLevel) {
-      // Level is a UI courtesy (the mic meter), computed off the same chunk
-      // that ships — what the meter shows is exactly what the model hears.
-      const samples = new Int16Array(e.data);
-      let sum = 0;
-      for (let i = 0; i < samples.length; i++) {
-        const s = samples[i] ?? 0;
-        sum += s * s;
-      }
-      onLevel(Math.sqrt(sum / samples.length) / 0x8000);
+  try {
+    // Chrome starts a context suspended unless it was created inside a user
+    // gesture. This one is created after `await getUserMedia`, which has already
+    // left the gesture's call stack — without the resume the worklet is never
+    // pumped: no frames, no error, an avatar that simply cannot hear you.
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
     }
-    onAudio(base64FromBytes(bytes));
-  };
 
-  const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 512;
-  source.connect(analyser);
+    const blob = new Blob([WORKLET_CODE], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    try {
+      await audioContext.audioWorklet.addModule(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
 
-  source.connect(worklet);
-  // A worklet only runs while connected to the destination, but its output is
-  // the raw mic — routing it through a muted gain keeps it pumping without
-  // playing the user back to themselves.
-  const mute = audioContext.createGain();
-  mute.gain.value = 0;
-  worklet.connect(mute);
-  mute.connect(audioContext.destination);
+    const source = audioContext.createMediaStreamSource(stream);
+    const worklet = new AudioWorkletNode(audioContext, "pcm-downsampler", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { targetRate: TARGET_SAMPLE_RATE },
+    });
 
-  return {
-    analyser,
-    setMuted: (muted) => {
-      for (const track of stream.getAudioTracks()) track.enabled = !muted;
-    },
-    stop: () => {
-      worklet.port.onmessage = null;
-      worklet.disconnect();
-      mute.disconnect();
-      analyser.disconnect();
-      source.disconnect();
-      stream.getTracks().forEach((t) => t.stop());
-      void audioContext.close();
-    },
-  };
+    worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+      const bytes = new Uint8Array(e.data);
+      if (bytes.length === 0) return;
+      if (onLevel) {
+        // Level is a UI courtesy (the mic meter), computed off the same chunk
+        // that ships — what the meter shows is exactly what the model hears.
+        const samples = new Int16Array(e.data);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) {
+          const s = samples[i] ?? 0;
+          sum += s * s;
+        }
+        onLevel(Math.sqrt(sum / samples.length) / 0x8000);
+      }
+      onAudio(base64FromBytes(bytes));
+    };
+
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+
+    source.connect(worklet);
+    // A worklet only runs while connected to the destination, but its output is
+    // the raw mic — routing it through a muted gain keeps it pumping without
+    // playing the user back to themselves.
+    const mute = audioContext.createGain();
+    mute.gain.value = 0;
+    worklet.connect(mute);
+    mute.connect(audioContext.destination);
+
+    return {
+      analyser,
+      setMuted: (muted) => {
+        for (const track of stream.getAudioTracks()) track.enabled = !muted;
+      },
+      stop: () => {
+        worklet.port.onmessage = null;
+        worklet.disconnect();
+        mute.disconnect();
+        analyser.disconnect();
+        source.disconnect();
+        stream.getTracks().forEach((t) => t.stop());
+        void audioContext.close();
+      },
+    };
+  } catch (error) {
+    stream.getTracks().forEach((t) => t.stop());
+    void audioContext.close().catch(() => {});
+    throw error;
+  }
 }
 
 function base64FromBytes(bytes: Uint8Array): string {

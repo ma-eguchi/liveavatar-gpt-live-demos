@@ -1,3 +1,11 @@
+> Sales rehearsal fork: read `tasks/todo.md` and `shared/rehearsal.ts` first.
+> The tutor/recap/widget sections below describe the upstream reference only;
+> tutor tools and automatic lessons are removed from the active sales flow.
+> Preserve audio transport and barge-in invariants. Customer instructions are
+> per session; never share one user’s product/context with another session.
+> `pnpm dev` permits missing API keys for UI work; actual session start requires keys.
+> Review currently shows the exact transcript and self-review prompts, not AI scoring.
+
 # AGENTS.md
 
 Operational map for coding agents (and fast-moving humans). Product overview
@@ -12,7 +20,7 @@ pnpm workspace, TypeScript everywhere, deliberately few dependencies.
 shared/     The contract. messages.ts (wire protocol) + tools.ts (tool registry).
             NOT a package — both sides import it by relative path.
 server/     Orchestrator. Node + ws only. `pnpm dev` = tsx watch.
-            prompts/*.md is the persona (Japanese tutor by default) — the
+            prompts/*.md is the persona (sales customer) — the
             intended customization point. src/prompts.ts loads it and holds the
             non-negotiable delegation/tool mechanics prompts.
 web/        Browser client. Vite + livekit-client + @hyperframes/player.
@@ -33,7 +41,7 @@ pnpm build        # web/dist — the server serves it in production
 ```
 
 `pnpm run setup`, not `pnpm setup` — the bare form is pnpm's own built-in.
-`dev`/`start` fail fast through `scripts/check-env.mjs` when required vars are
+`start` fails fast through `scripts/check-env.mjs` when required vars are
 missing; its required list mirrors `missingConfig()` in `server/src/config.ts`
 — change one, change both.
 
@@ -124,7 +132,7 @@ fallbacks in `src/prompts.ts` only cover a deleted file). An empty
 
 - The session is billable from `/api/session/start`. Every teardown path must
   reach `stopSession` — the registry watchdog (60s idle) is the backstop, not
-  the plan. Max duration is enforced upstream by the account's plan, not here.
+  the plan. This fork also enforces a five-minute conversation limit on the server after begin.
 - `stopSession` claims via Map delete, so racing stops are idempotent.
 - One browser per session: the second websocket for the same id is rejected.
 - Media-server readiness means the server said `session.state_updated:

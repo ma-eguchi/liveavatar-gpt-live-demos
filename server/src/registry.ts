@@ -33,23 +33,41 @@ export function getSession(sessionId: string): Session | undefined {
  * Tear a session down. Idempotent: the Map delete is the claim, so a browser
  * stop racing the watchdog runs exactly once.
  */
-export async function stopSession(sessionId: string, reason: string): Promise<boolean> {
+const stopping = new Map<string, Promise<boolean>>();
+export function activeCount(): number {
+  return sessions.size + stopping.size;
+}
+export function stopSession(
+  sessionId: string,
+  reason: string,
+): Promise<boolean> {
+  const pending = stopping.get(sessionId);
+  if (pending) return pending;
   const session = sessions.get(sessionId);
-  if (!session) return false;
+  if (!session) return Promise.resolve(false);
   sessions.delete(sessionId);
-  console.log(`[registry] stopping ${sessionId.slice(0, 8)} (${reason}, ${sessions.size} live)`);
-  // Legs first, so GPT-Live gets its session.close and the avatar finishes its
-  // word rather than being cut off underneath.
-  await session.stop().catch(() => {});
-  await stopUpstream(sessionId).catch((err: unknown) => {
-    console.warn(`[registry] upstream stop failed for ${sessionId}: ${err}`);
-  });
-  return true;
+  const finished = (async () => {
+    await session.stop(reason).catch(() => {});
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        await stopUpstream(sessionId);
+        break;
+      } catch {
+        console.warn(`[registry] upstream stop failed (${tries + 1}/2)`);
+      }
+    }
+    return true;
+  })().finally(() => stopping.delete(sessionId));
+  stopping.set(sessionId, finished);
+  return finished;
 }
 
 /** Best-effort teardown of everything still live, on process exit. */
 export async function stopAll(): Promise<void> {
-  await Promise.all([...sessions.keys()].map((id) => stopSession(id, "shutdown")));
+  await Promise.all([
+    ...stopping.values(),
+    ...[...sessions.keys()].map((id) => stopSession(id, "shutdown")),
+  ]);
 }
 
 setInterval(() => {

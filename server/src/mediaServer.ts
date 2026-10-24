@@ -114,13 +114,20 @@ export class MediaServerLeg {
 
       if (this.closed) return;
 
-      if (connectedAt !== null && Date.now() - connectedAt >= STABLE_CONNECTION_MS) attempt = 0;
+      if (
+        connectedAt !== null &&
+        Date.now() - connectedAt >= STABLE_CONNECTION_MS
+      )
+        attempt = 0;
       attempt += 1;
       if (attempt >= MAX_CONNECT_ATTEMPTS) {
         this.log(`media server: gave up after ${attempt} attempts`);
         return;
       }
-      const delay = Math.min(MAX_BACKOFF_MS, INITIAL_BACKOFF_MS * 2 ** (attempt - 1));
+      const delay = Math.min(
+        MAX_BACKOFF_MS,
+        INITIAL_BACKOFF_MS * 2 ** (attempt - 1),
+      );
       this.log(`media server: reconnecting in ${delay}ms (attempt ${attempt})`);
       await new Promise((r) => setTimeout(r, delay));
     }
@@ -130,7 +137,8 @@ export class MediaServerLeg {
   private connectOnce(): Promise<number | null> {
     return new Promise((resolve) => {
       let connectedAt: number | null = null;
-      const ws = new WebSocket(this.wsUrl);
+      const ws = new WebSocket(this.wsUrl, { handshakeTimeout: 15_000 });
+      this.ws = ws;
       const timers: NodeJS.Timeout[] = [];
 
       const finish = () => {
@@ -141,12 +149,17 @@ export class MediaServerLeg {
       };
 
       ws.on("open", () => {
+        if (this.closed) {
+          ws.terminate();
+          return;
+        }
         this.ws = ws;
         connectedAt = Date.now();
         timers.push(setInterval(() => ws.ping(), PING_INTERVAL_MS));
         timers.push(
           setInterval(
-            () => this.send({ type: "session.keep_alive", event_id: randomUUID() }),
+            () =>
+              this.send({ type: "session.keep_alive", event_id: randomUUID() }),
             KEEP_ALIVE_INTERVAL_MS,
           ),
         );
@@ -185,11 +198,15 @@ export class MediaServerLeg {
     // Unblocks anyone in waitUntilReady on a session torn down before the
     // socket ever came up.
     this.connected.set();
-    this.ws?.close();
+    this.ws?.terminate();
   }
 
   private send(payload: Record<string, unknown>): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.connected.value) {
+    if (
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.connected.value
+    ) {
       // Not connected (or mid-reconnect). Dropping is the only honest option —
       // see run(); the server would drop it silently anyway.
       return;
@@ -207,7 +224,8 @@ export class MediaServerLeg {
     if (event.type === "session.state_updated") {
       this.log(`media server: state ${event.state}`);
       if (event.state === "connected") this.connected.set();
-      else if (event.state === "closing" || event.state === "closed") this.connected.clear();
+      else if (event.state === "closing" || event.state === "closed")
+        this.connected.clear();
     } else if (event.type === "error") {
       this.log(`media server error event: ${raw.slice(0, 300)}`);
     }

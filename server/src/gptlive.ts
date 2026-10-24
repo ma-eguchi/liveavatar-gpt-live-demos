@@ -20,16 +20,12 @@
 
 import WebSocket from "ws";
 import type { Turn } from "../../shared/messages";
-import { toolSchemas } from "../../shared/tools";
 import { config } from "./config";
 import {
   CLIENT_DELEGATION_STUB,
   DEFAULT_GREETING,
   DEFAULT_INSTRUCTIONS,
   GREETING_PREAMBLE,
-  LESSON_DIRECTIVE,
-  LIVE_DIRECTIVE,
-  RESPONSES_INSTRUCTIONS,
 } from "./prompts";
 import { TurnProjector } from "./turns";
 
@@ -126,6 +122,7 @@ export interface GptLiveEvents {
 
 export class GptLiveBridge {
   private ws: WebSocket | null = null;
+  private closing = false;
   private sessionId: string | null = null;
   private closedByServer: (() => void) | null = null;
 
@@ -146,6 +143,7 @@ export class GptLiveBridge {
   constructor(
     private readonly events: GptLiveEvents,
     private readonly log: (msg: string) => void = () => {},
+    private readonly instructions: string = DEFAULT_INSTRUCTIONS,
   ) {
     this.turns = new TurnProjector({
       onTurn: (turn) => this.events.onTurn(turn),
@@ -155,16 +153,21 @@ export class GptLiveBridge {
 
   /** Connect and pump upstream events until the socket closes. */
   run(): Promise<void> {
+    if (this.closing) return Promise.resolve();
     return new Promise((resolve) => {
       const ws = new WebSocket(BASE_URL, {
         headers: {
           Authorization: `Bearer ${config.gptlive.apiKey}`,
         },
+        handshakeTimeout: 15_000,
         maxPayload: 8 * 1024 * 1024, // audio deltas outgrow the default 1MB cap
       });
       this.ws = ws;
 
-      ws.on("open", () => this.startSession());
+      ws.on("open", () => {
+        if (this.closing) ws.terminate();
+        else this.startSession();
+      });
       ws.on("message", (raw) => {
         try {
           this.handleEvent(JSON.parse(raw.toString()) as Json);
@@ -176,6 +179,7 @@ export class GptLiveBridge {
       ws.on("error", (err) => this.events.onError(err.message));
       ws.on("close", () => {
         this.ws = null;
+        this.turns.flush();
         this.turns.dispose();
         resolve();
       });
@@ -193,7 +197,11 @@ export class GptLiveBridge {
    * required by the API even when null; a non-null value must name a known
    * CLIENT delegation (never a Responses one).
    */
-  append(kind: AppendKind, text: string, delegationId: string | null = null): void {
+  append(
+    kind: AppendKind,
+    text: string,
+    delegationId: string | null = null,
+  ): void {
     const trimmed = text.trim();
     if (!trimmed) return;
     this.appendSeq += 1;
@@ -216,8 +224,17 @@ export class GptLiveBridge {
    * the transport itself — the timeout is for a session that will not close.
    */
   async close(): Promise<void> {
+    this.closing = true;
     const ws = this.ws;
-    if (!ws) return;
+    if (!ws) {
+      this.turns.flush();
+      return;
+    }
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.terminate();
+      this.turns.flush();
+      return;
+    }
     // Listener installed before the command goes out, per the guide.
     const drained = new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), CLOSE_DRAIN_TIMEOUT_MS);
@@ -231,7 +248,9 @@ export class GptLiveBridge {
       });
     });
     this.send(GPTLiveClientEvent.SessionClose, { event_id: "close" });
-    if (!(await drained)) ws.close();
+    await drained;
+    this.turns.flush();
+    ws.terminate();
   }
 
   private send(
@@ -244,13 +263,7 @@ export class GptLiveBridge {
   }
 
   private startSession(): void {
-    // The persona comes from server/prompts/instructions.md (see prompts.ts);
-    // the directives are mechanics and always appended.
-    // Persona + visual/delegation mechanics + the whole lesson plan, all at
-    // startup: instructions are the one channel the live model reliably
-    // follows, and mid-session appends broke its own practice pacing.
-    const instructions =
-      DEFAULT_INSTRUCTIONS + LIVE_DIRECTIVE + LESSON_DIRECTIVE;
+    const instructions = this.instructions;
     // v3: the FIRST message. Everything here is immutable afterwards except
     // delegation.responses settings (session.update) — and the delegation
     // TYPE is fixed for the session's life.
@@ -270,18 +283,12 @@ export class GptLiveBridge {
           type: "responses",
           responses: {
             model: config.gptlive.responsesModel,
-            instructions: RESPONSES_INSTRUCTIONS,
-            tools: toolSchemas(),
+            instructions: this.instructions,
+            tools: [],
             tool_choice: "auto",
-            // One visual per teaching moment — a constraint the model cannot
-            // talk itself out of, unlike the prose asking for the same thing.
-            // Also keeps the tool loop simple: one call per response, so one
-            // result + one response.create.
+            // Keep the observed delegation configuration, with no tutor tools.
             parallel_tool_calls: false,
-            // The delegated turn is on the critical path for on-screen timing;
-            // deliberation buys nothing for "pick a card and fill its fields".
-            // Non-reasoning models reject the parameter outright, so only send
-            // it to ones that accept it.
+            // Retain the upstream sample's response-model configuration.
             reasoning: { effort: "low" },
           },
         },
@@ -304,7 +311,6 @@ export class GptLiveBridge {
               : "") +
             ")",
         );
-        this.sendGreeting();
         this.events.onReady();
         break;
 
@@ -424,7 +430,9 @@ export class GptLiveBridge {
               JSON.stringify(ev.response ?? ev).slice(0, 400),
           );
         } else if (config.gptlive.debug) {
-          this.log(`gptlive delegation ${delegationId ?? "?"} response completed`);
+          this.log(
+            `gptlive delegation ${delegationId ?? "?"} response completed`,
+          );
         }
         break;
       }
@@ -434,7 +442,7 @@ export class GptLiveBridge {
     }
   }
 
-  private sendGreeting(): void {
+  sendGreeting(): void {
     // From server/prompts/greeting.md. An empty file means "say nothing, let
     // the user speak first".
     // v3 speak-first path per OpenAI's tested example: one fresh
@@ -516,13 +524,16 @@ export class GptLiveBridge {
         : type;
     if (!this.seenEventTypes.has(shapeKey)) {
       this.seenEventTypes.add(shapeKey);
-      const inner = type === GPTLiveServerEvent.ResponseEvent ? event.event : event;
+      const inner =
+        type === GPTLiveServerEvent.ResponseEvent ? event.event : event;
       const itemKeys =
         inner?.item && typeof inner.item === "object"
           ? ` item=[${Object.keys(inner.item).sort().join(",")}]`
           : "";
       this.log(
-        `gptlive event: ${shapeKey} keys=[${Object.keys(inner ?? {}).sort().join(",")}]${itemKeys}`,
+        `gptlive event: ${shapeKey} keys=[${Object.keys(inner ?? {})
+          .sort()
+          .join(",")}]${itemKeys}`,
       );
     }
     // Full payloads on demand. Audio deltas are elided — they are megabytes of

@@ -103,6 +103,17 @@ export class TurnProjector {
     this.sink.onTurn({ id: cur.id, role, text: cur.text, done: true });
   }
 
+  /** Preserve partial final transcripts without claiming they were fully heard. */
+  flush(): void {
+    for (const role of ["user", "assistant"] as Role[]) {
+      const cur = this.open[role];
+      if (!cur) continue;
+      clearTimeout(cur.timer);
+      this.open[role] = null;
+      this.sink.onTurn({ id: cur.id, role, text: cur.text, done: false, uncertain: true });
+    }
+  }
+
   dispose(): void {
     for (const role of ["user", "assistant"] as Role[]) {
       const cur = this.open[role];

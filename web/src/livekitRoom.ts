@@ -16,10 +16,12 @@ export async function joinAvatarRoom(
   url: string,
   token: string,
   elements: { video: HTMLVideoElement; audio: HTMLAudioElement },
+  signal?: AbortSignal,
 ): Promise<AvatarRoom> {
   const room = new Room({ adaptiveStream: true, dynacast: true });
 
   const attach = (track: RemoteTrack) => {
+    if (signal?.aborted) return;
     if (track.kind === Track.Kind.Video) track.attach(elements.video);
     if (track.kind === Track.Kind.Audio) track.attach(elements.audio);
   };
@@ -27,7 +29,20 @@ export async function joinAvatarRoom(
   room.on(RoomEvent.TrackSubscribed, attach);
   room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => track.detach());
 
-  await room.connect(url, token);
+  const abort = () => {
+    void room.disconnect();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal?.aborted) throw new DOMException("Canceled", "AbortError");
+    await room.connect(url, token);
+    if (signal?.aborted) throw new DOMException("Canceled", "AbortError");
+  } catch (error) {
+    signal?.removeEventListener("abort", abort);
+    room.removeAllListeners();
+    await room.disconnect();
+    throw error;
+  }
 
   // Tracks published before we finished connecting fire no TrackSubscribed, so
   // the avatar would stay black until it happened to republish.
@@ -47,6 +62,7 @@ export async function joinAvatarRoom(
 
   return {
     disconnect: async () => {
+      signal?.removeEventListener("abort", abort);
       room.removeAllListeners();
       await room.disconnect();
     },

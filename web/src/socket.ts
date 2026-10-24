@@ -7,6 +7,8 @@ import type { ClientMessage, ServerMessage, Turn, UiMessage } from "../../shared
 
 export interface SessionSocketHandlers {
   onReady: () => void;
+  onStarted: (startedAt: number, deadline: number) => void;
+  onEnded: (reason: string) => void;
   onTurn: (turn: Turn) => void;
   onUi: (msg: UiMessage) => void;
   /** The avatar was cut off: what it was mid-way through saying is gone. */
@@ -17,6 +19,7 @@ export interface SessionSocketHandlers {
 
 export interface SessionSocket {
   sendMicAudio: (base64: string) => void;
+  begin: () => void;
   close: () => void;
 }
 
@@ -38,6 +41,12 @@ export function openSessionSocket(
     switch (msg.type) {
       case "ready":
         handlers.onReady();
+        break;
+      case "started":
+        handlers.onStarted(msg.startedAt, msg.deadline);
+        break;
+      case "ended":
+        handlers.onEnded(msg.reason);
         break;
       case "turn":
         handlers.onTurn(msg);
@@ -65,6 +74,7 @@ export function openSessionSocket(
   };
 
   return {
+    begin: () => send({ type: "begin" }),
     sendMicAudio: (audio) => send({ type: "mic_audio", audio }),
     close: () => {
       closedByUs = true;

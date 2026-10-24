@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Preflight for `pnpm dev` / `pnpm start`: refuse to boot with required env
+ * Preflight for `pnpm start`: refuse to boot with required env
  * missing, naming exactly what's absent and how to fix it — instead of a
  * server that starts fine and then 500s on the first session.
  *
