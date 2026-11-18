@@ -15,8 +15,8 @@ Responses model            fires a tool call (registry: shared/tools.ts)
       └► server/src/session.ts  hands it to the dispatcher
           └► server/src/tools.ts  dispatchToolCall: args → { widget, props }, clamped
               └► /ws/{session_id}   { type: "ui", widget, props }   (shared/messages.ts)
-                  └► web/src/overlays/index.ts  one switch over `widget`, staging decided here
-                      └► web/src/overlays/<widget>.ts  builds a URL, points the player at it
+                  └► web/lib/avatar/overlays/index.ts  one switch over `widget`, staging decided here
+                      └► web/lib/avatar/overlays/<widget>.ts  builds a URL, points the player at it
                           └► <hyperframes-player src="/overlays/<name>.html?props...">
                               └► web/public/overlays/<name>.html  the composition — plays, ends, clears
 ```
@@ -90,7 +90,7 @@ html, body { color-scheme: dark; background: transparent; }
 
 This is the gotcha that whites out the whole avatar: Chrome paints an opaque
 base behind any iframe whose used color scheme differs from its embedder's.
-The host page (`web/index.html`) is dark; a composition left on the default
+The host page (`web/app/globals.css`) is dark; a composition left on the default
 scheme renders as an opaque white sheet no matter how transparent its
 background claims to be.
 
@@ -233,7 +233,7 @@ argument to `dispatchToolCall`, and the tool schema only carries what the
 model may legitimately supply (the recap tool takes a `title`, never the word
 list — the model would misremember it).
 
-### 4. `web/src/overlays/exampleSentence.ts` — the renderer module
+### 4. `web/lib/avatar/overlays/exampleSentence.ts` — the renderer module
 
 One module per widget: encode the props into the composition URL and point the
 player at it.
@@ -260,7 +260,7 @@ export function showExampleSentence(ctx: OverlayContext, props: ExampleSentenceP
 The `t` param is load-bearing: setting an identical `src` is a no-op, so a
 repeated widget would never replay without it.
 
-### 5. `web/src/overlays/index.ts` — route it, and decide its staging
+### 5. `web/lib/avatar/overlays/index.ts` — route it, and decide its staging
 
 Add a case to the `render` switch:
 
@@ -301,7 +301,7 @@ window.__ui({ widget: "example_sentence", props: { sentence: "Could you help me?
 window.__ui({ widget: "hide", props: {} });
 ```
 
-`__ui` is `overlays.render` exposed on `window` (`web/src/main.ts`) — it
+`__ui` is `overlays.render` exposed on `window` (`web/app/practice/PracticeRoom.tsx`) — it
 exercises everything from the wire message down, including staging and the
 composition itself.
 
@@ -329,7 +329,7 @@ things to know when watching the server logs:
 - [ ] `shared/messages.ts`: props interface + `UiMessage` union member
 - [ ] `shared/tools.ts`: `ToolDef` with a **distinct required-key set** + args interface
 - [ ] `server/src/tools.ts`: `dispatchToolCall` case, every string clamped, `null` on invalid
-- [ ] `web/src/overlays/<widget>.ts`: renderer with cache-bust param
-- [ ] `web/src/overlays/index.ts`: switch case + staging (`setPip`)
+- [ ] `web/lib/avatar/overlays/<widget>.ts`: renderer with cache-bust param
+- [ ] `web/lib/avatar/overlays/index.ts`: switch case + staging (`setPip`)
 - [ ] `server/src/prompts.ts`: `RESPONSES_INSTRUCTIONS` mention (if the model should use it unprompted)
 - [ ] `pnpm typecheck` passes; `window.__ui(...)` plays it

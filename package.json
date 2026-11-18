@@ -1,13 +1,13 @@
 {
-  "name": "liveavatar-english-coach",
-  "version": "0.1.0",
+  "name": "talk-with-masahiro",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/heygen-com/liveavatar-language-demo.git"
+    "url": "https://github.com/ma-eguchi/liveavatar-gpt-live-demos.git"
   },
-  "description": "English conversation coach: OpenAI GPT-Live driving a HeyGen LiveAvatar, with pronunciation cards rendered on screen.",
+  "description": "AI avatar English coach: Next.js + Supabase app, with a Node orchestrator threading OpenAI GPT-Live into a HeyGen LiveAvatar.",
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "node scripts/check-env.mjs && pnpm --parallel -r dev",

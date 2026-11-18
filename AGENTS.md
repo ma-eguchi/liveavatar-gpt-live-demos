@@ -11,31 +11,37 @@ pnpm workspace, TypeScript everywhere, deliberately few dependencies.
 ```
 shared/     The contract. messages.ts (wire protocol) + tools.ts (tool registry).
             NOT a package — both sides import it by relative path.
-server/     Orchestrator. Node + ws only. `pnpm dev` = tsx watch.
+server/     Orchestrator. Node + ws only. `pnpm dev` = tsx watch on :8787.
             prompts/*.md is the persona (English coach by default) — the
             intended customization point. src/prompts.ts loads it and holds the
             non-negotiable delegation/tool mechanics prompts.
-web/        Browser client. Vite + livekit-client + @hyperframes/player.
+web/        Next.js 16 App Router (Vercel). Pages, Supabase auth (proxy.ts),
+            /api/session/{start,stop}. lib/avatar/ is the framework-free
+            browser session (LiveKit, mic worklet, overlays) that
+            app/practice/PracticeRoom.tsx drives.
+supabase/   migrations/*.sql — tables, RLS, and the quota/session-end RPCs.
 ```
 
-`pnpm dev` at the root runs both. Vite (:5173) proxies `/api` and `/ws` to the
-server (:8787), so the browser sees one origin. Config is one `.env` at the
-repo root (see `.env.example`); only the server reads it.
+`pnpm dev` at the root runs both: Next on :3000, orchestrator on :8787.
+The browser talks HTTP to Next only; Next calls the orchestrator server-side;
+the browser's websocket goes **directly** to the orchestrator (Vercel cannot
+proxy websockets). Config: orchestrator reads `.env` at the repo root, Next
+reads `web/.env.local` (see both `.env.example` files).
 
-## Commands
+### Two orchestrator modes
 
-```bash
-pnpm install
-pnpm run setup    # interactive: collects + live-verifies API keys, writes .env
-pnpm dev          # both processes (preflights required env via scripts/check-env.mjs)
-pnpm typecheck    # tsc --noEmit in server and web (both include ../shared)
-pnpm build        # web/dist — the server serves it in production
-```
+- **local** (`ORCHESTRATOR_SECRET` unset): the original open starter.
+- **hosted** (set): `/api/session/*` require `Authorization: Bearer <secret>`
+  (only Next holds it, after auth + `start_practice_session()` quota), the
+  websocket upgrade requires the per-session `?ticket=` minted by /start and an
+  Origin in `ALLOWED_ORIGINS`, `MAX_SESSION_SECONDS` caps a session, and every
+  teardown calls `record_session_end()` with the service role key
+  (`server/src/persist.ts`).
 
-`pnpm run setup`, not `pnpm setup` — the bare form is pnpm's own built-in.
-`dev`/`start` fail fast through `scripts/check-env.mjs` when required vars are
-missing; its required list mirrors `missingConfig()` in `server/src/config.ts`
-— change one, change both.
+The quota lives in SQL (advisory lock + count + insert in one function), not
+in Next — don't move it into app code, two tabs would race past it. The
+browser may only write `words.mastered` (column grant); session ends are
+service-role only.
 
 ## Invariants — do not "fix" these
 
@@ -74,7 +80,7 @@ missing; its required list mirrors `missingConfig()` in `server/src/config.ts`
   `thinking` — mapping by the word speaks progress text aloud.
 - **Model output is untrusted.** The dispatcher clamps it
   (`server/src/tools.ts`); compositions render it with `textContent` only.
-- **Staging is per-widget, client-decided** (`web/src/overlays/index.ts`) —
+- **Staging is per-widget, client-decided** (`web/lib/avatar/overlays/index.ts`) —
   never a tool argument. The recap widget sets PiP; the term card does not.
 - **The recap list is server state.** Term cards are recorded on the session;
   `show_learned_words` renders from that store. Don't let the model supply the
@@ -84,7 +90,7 @@ missing; its required list mirrors `missingConfig()` in `server/src/config.ts`
 
 Full walkthrough — the Hyperframes composition contract and every hook
 (`shared/tools.ts` → `server/src/tools.ts` → `shared/messages.ts` →
-`web/src/overlays/`) — lives in
+`web/lib/avatar/overlays/`) — lives in
 [docs/ADDING_FRONTEND_COMPONENTS.md](docs/ADDING_FRONTEND_COMPONENTS.md).
 Follow it; the invariants above are restated there in context.
 
@@ -96,7 +102,7 @@ debugging ladder live in
 [docs/MAKING_VISUALS_FIRE.md](docs/MAKING_VISUALS_FIRE.md).
 
 Test without a session: `window.__ui({ widget: ..., props: ... })` in the
-browser console.
+browser console on /practice (dev builds only).
 
 ## Repurposing (new persona / domain)
 
@@ -123,8 +129,9 @@ fallbacks in `src/prompts.ts` only cover a deleted file). An empty
 ## Gotchas
 
 - The session is billable from `/api/session/start`. Every teardown path must
-  reach `stopSession` — the registry watchdog (60s idle) is the backstop, not
-  the plan. Max duration is enforced upstream by the account's plan, not here.
+  reach `stopSession` — the registry watchdog (60s idle, plus
+  `MAX_SESSION_SECONDS`) is the backstop, not the plan. `Session.stop()`
+  closes the browser socket so server-side ends reach the page.
 - `stopSession` claims via Map delete, so racing stops are idempotent.
 - One browser per session: the second websocket for the same id is rejected.
 - Media-server readiness means the server said `session.state_updated:

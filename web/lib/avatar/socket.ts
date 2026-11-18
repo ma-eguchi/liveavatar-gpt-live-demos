@@ -3,7 +3,7 @@
  * and visuals come down. Avatar audio/video do NOT travel here — they arrive
  * over LiveKit, because the server threads audio into the media server itself.
  */
-import type { ClientMessage, ServerMessage, Turn, UiMessage } from "../../shared/messages";
+import type { ClientMessage, ServerMessage, Turn, UiMessage } from "../../../shared/messages";
 
 export interface SessionSocketHandlers {
   onReady: () => void;
@@ -21,11 +21,11 @@ export interface SessionSocket {
 }
 
 export function openSessionSocket(
-  wsPath: string,
+  /** Absolute ws(s):// URL to the orchestrator, including the session ticket. */
+  wsUrl: string,
   handlers: SessionSocketHandlers,
 ): SessionSocket {
-  const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}${wsPath}`);
+  const ws = new WebSocket(wsUrl);
   let closedByUs = false;
 
   ws.onmessage = (event: MessageEvent<string>) => {

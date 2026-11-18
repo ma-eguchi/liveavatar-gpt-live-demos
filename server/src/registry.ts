@@ -6,7 +6,9 @@
  * production adds.
  */
 
+import { config } from "./config";
 import { stopSession as stopUpstream } from "./liveavatar";
+import { recordSessionEnd } from "./persist";
 import { Session } from "./session";
 
 const WATCHDOG_TICK_MS = 5_000;
@@ -29,6 +31,14 @@ export function getSession(sessionId: string): Session | undefined {
   return sessions.get(sessionId);
 }
 
+/** Hosted mode: the Next.js backend addresses sessions by its own id. */
+export function findByPracticeId(practiceSessionId: string): Session | undefined {
+  for (const session of sessions.values()) {
+    if (session.owner?.practiceSessionId === practiceSessionId) return session;
+  }
+  return undefined;
+}
+
 /**
  * Tear a session down. Idempotent: the Map delete is the claim, so a browser
  * stop racing the watchdog runs exactly once.
@@ -44,6 +54,15 @@ export async function stopSession(sessionId: string, reason: string): Promise<bo
   await stopUpstream(sessionId).catch((err: unknown) => {
     console.warn(`[registry] upstream stop failed for ${sessionId}: ${err}`);
   });
+  if (session.owner) {
+    await recordSessionEnd({
+      practiceSessionId: session.owner.practiceSessionId,
+      upstreamSessionId: sessionId,
+      reason,
+      durationSec: (Date.now() - session.startedAt) / 1000,
+      words: session.learnedWordsSnapshot(),
+    });
+  }
   return true;
 }
 
@@ -57,6 +76,13 @@ setInterval(() => {
   for (const session of sessions.values()) {
     if (now - session.lastActivityAt >= IDLE_TIMEOUT_MS) {
       void stopSession(session.sessionId, "idle");
+    } else if (
+      config.maxSessionSeconds > 0 &&
+      now - session.startedAt >= config.maxSessionSeconds * 1000
+    ) {
+      // The public demo's cost ceiling. Say why before the line goes dead.
+      session.notifyError("time_limit");
+      void stopSession(session.sessionId, "max_duration");
     }
   }
 }, WATCHDOG_TICK_MS).unref();

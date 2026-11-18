@@ -4,7 +4,7 @@
  * composition reads location.search and renders with textContent — the values
  * come from a model and must never become markup.
  */
-import type { TermCardProps } from "../../../shared/messages";
+import type { TermCardProps } from "../../../../shared/messages";
 import type { OverlayContext } from "./index";
 
 // Cache-bust: showing the same card twice must restart its timeline, and an

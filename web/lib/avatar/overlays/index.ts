@@ -8,9 +8,9 @@
  * Staging is decided HERE, per widget — the model has no say in it. A term
  * card overlays the full-frame avatar; the learned-words recap sets `data-pip`
  * on the stage, shrinking the avatar to the bottom-right corner while the
- * panel is up (see the #stage[data-pip] rules in index.html).
+ * panel is up (see the .stage[data-pip] rules in web/app/globals.css).
  */
-import type { UiMessage } from "../../../shared/messages";
+import type { UiMessage } from "../../../../shared/messages";
 import { hideOverlay } from "./hide";
 import { showLearnedWords } from "./learnedWords";
 import { showTermCard } from "./termCard";

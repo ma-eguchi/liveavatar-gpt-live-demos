@@ -200,7 +200,7 @@ async function main() {
   });
 
   console.log(`\n${c.green("Done.")} Wrote .env — that's everything required.`);
-  console.log(`Run ${c.bold("pnpm dev")} and open http://localhost:5173\n`);
+  console.log(`Run ${c.bold("pnpm dev")} and open http://localhost:3000\n`);
   console.log(c.bold("Next steps, try playing around with these"));
   info(`GPT_LIVE_MODEL         ${env.GPT_LIVE_MODEL || DEFAULT_GPT_LIVE_MODEL} — swap in .env`);
   info(

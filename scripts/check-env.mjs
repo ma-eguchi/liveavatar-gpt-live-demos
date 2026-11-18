@@ -18,6 +18,8 @@ try {
 }
 
 const required = ["LIVEAVATAR_API_KEY", "OPENAI_API_KEY"];
+// Hosted mode (ORCHESTRATOR_SECRET set) also persists to Supabase.
+if (process.env.ORCHESTRATOR_SECRET) required.push("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY");
 const missing = required.filter((name) => !process.env[name]);
 
 if (missing.length) {

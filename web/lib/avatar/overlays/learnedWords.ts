@@ -7,7 +7,7 @@
  * parses it defensively and renders with textContent — the values originate
  * from a model, so they must never become markup.
  */
-import type { LearnedWordsProps } from "../../../shared/messages";
+import type { LearnedWordsProps } from "../../../../shared/messages";
 import type { OverlayContext } from "./index";
 
 // Cache-bust: showing the recap twice must restart its timeline, and an

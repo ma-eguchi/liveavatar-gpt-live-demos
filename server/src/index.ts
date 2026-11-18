@@ -7,36 +7,34 @@
  *   WS   /ws/:sessionId      → the browser leg: mic audio up; transcripts,
  *                              tool visuals, and errors down
  *
- * In dev the web app runs on Vite (:5173) and proxies /api and /ws here, so
- * the browser sees one origin. In production this server also serves the built
- * frontend from web/dist.
+ * Two modes, picked by ORCHESTRATOR_SECRET:
  *
- * ⚠ No auth, on purpose — this is a local starter. Before exposing it
- * publicly, gate /api/session/start (any login) and the websocket upgrade
- * (a short-lived ticket minted by /start). See docs/ARCHITECTURE.md.
+ *  - local (unset): the original open starter. Anyone who can reach the port
+ *    can start a session. Never expose it like this.
+ *  - hosted (set): only the Next.js backend may call /api/session/* (Bearer
+ *    secret; it has already authenticated the user and charged their daily
+ *    quota). The browser connects the websocket directly — Vercel cannot
+ *    proxy websockets — so the upgrade needs the single-use ticket minted by
+ *    /start, and its Origin must be in ALLOWED_ORIGINS.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
-import { fileURLToPath } from "node:url";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { ClientMessage } from "../../shared/messages";
 import { config, missingConfig } from "./config";
 import { LiveAvatarApiError, startSession as startUpstream } from "./liveavatar";
-import { addSession, getSession, stopAll, stopSession } from "./registry";
-import { Session } from "./session";
+import {
+  addSession,
+  findByPracticeId,
+  getSession,
+  stopAll,
+  stopSession,
+} from "./registry";
+import { Session, type SessionOwner } from "./session";
 
-const WEB_DIST = fileURLToPath(new URL("../../web/dist", import.meta.url));
-const MIME: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".json": "application/json",
-};
+const hosted = Boolean(config.hosted.secret);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const server = createServer((req, res) => {
   void route(req, res).catch((err: unknown) => {
@@ -52,37 +50,79 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.writeHead(200).end("ok");
     return;
   }
-  if (req.method === "POST" && path === "/api/session/start") return handleStart(res);
-  if (req.method === "POST" && path === "/api/session/stop") return handleStop(req, res);
-  return serveStatic(res, path);
+  if (req.method === "POST" && (path === "/api/session/start" || path === "/api/session/stop")) {
+    if (hosted && !hasSecret(req)) {
+      json(res, 401, { error: "unauthorized" });
+      return;
+    }
+    return path === "/api/session/start" ? handleStart(req, res) : handleStop(req, res);
+  }
+  res.writeHead(404, { "Content-Type": "text/plain" }).end("orchestrator — see /healthz");
 }
 
-async function handleStart(res: ServerResponse): Promise<void> {
+function hasSecret(req: IncomingMessage): boolean {
+  const header = req.headers.authorization ?? "";
+  return safeEqual(header, `Bearer ${config.hosted.secret}`);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+async function handleStart(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const missing = missingConfig();
   if (missing.length > 0) {
     json(res, 500, { error: `missing env vars: ${missing.join(", ")} — copy .env.example to .env` });
     return;
   }
+
+  let owner: SessionOwner | null = null;
+  if (hosted) {
+    const body = (await readJson(req)) as { practice_session_id?: unknown; user_id?: unknown };
+    if (
+      typeof body.practice_session_id !== "string" ||
+      !UUID_RE.test(body.practice_session_id) ||
+      typeof body.user_id !== "string" ||
+      !UUID_RE.test(body.user_id)
+    ) {
+      json(res, 400, { error: "practice_session_id and user_id are required" });
+      return;
+    }
+    owner = {
+      practiceSessionId: body.practice_session_id,
+      userId: body.user_id,
+      wsTicket: randomBytes(24).toString("base64url"),
+    };
+  }
+
   try {
     const upstream = await startUpstream();
-    const session = new Session(upstream.sessionId, upstream.wsUrl, (id) => {
-      void stopSession(id, "leg_died");
-    });
+    const session = new Session(
+      upstream.sessionId,
+      upstream.wsUrl,
+      (id) => {
+        void stopSession(id, "leg_died");
+      },
+      owner,
+    );
     addSession(session);
     session.start();
     console.log(`[http] session started: ${upstream.sessionId}`);
+    const wsPath = owner
+      ? `/ws/${upstream.sessionId}?ticket=${owner.wsTicket}`
+      : `/ws/${upstream.sessionId}`;
     json(res, 201, {
       session_id: upstream.sessionId,
       livekit_url: upstream.livekitUrl,
       livekit_client_token: upstream.livekitClientToken,
-      // Relative on purpose: the browser dials the same origin it loaded from
-      // (the Vite proxy in dev, this server in prod).
-      ws_path: `/ws/${upstream.sessionId}`,
+      // Relative: the caller resolves it against wherever it reached us
+      // (the Next.js backend prefixes its public orchestrator URL).
+      ws_path: wsPath,
+      max_session_seconds: config.maxSessionSeconds,
     });
   } catch (err) {
-    // Verbatim upstream errors are the right DX for a local starter: "out of
-    // credits" or "invalid avatar_id" should reach the person who can fix it.
-    // (Production fronts this with its own API and hides the detail.)
     const message =
       err instanceof LiveAvatarApiError
         ? err.message
@@ -90,59 +130,49 @@ async function handleStart(res: ServerResponse): Promise<void> {
           ? err.message
           : "session start failed";
     console.error(`[http] session start failed: ${message}`);
+    // Hosted callers (the Next.js backend) log the detail and show the user a
+    // generic message; local developers want it verbatim.
     json(res, 502, { error: message });
   }
 }
 
 async function handleStop(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = (await readJson(req)) as { session_id?: string };
-  if (typeof body.session_id === "string") await stopSession(body.session_id, "client_stop");
+  const body = (await readJson(req)) as { session_id?: string; practice_session_id?: string };
+  if (typeof body.session_id === "string") {
+    await stopSession(body.session_id, "client_stop");
+  } else if (typeof body.practice_session_id === "string") {
+    const session = findByPracticeId(body.practice_session_id);
+    if (session) await stopSession(session.sessionId, "client_stop");
+  }
   // Already-gone is success: the caller wanted it gone and it is gone.
   res.writeHead(204).end();
 }
 
-async function serveStatic(res: ServerResponse, pathname: string): Promise<void> {
-  let rel = decodeURIComponent(pathname);
-  if (rel === "/" || rel === "") rel = "/index.html";
-  const filePath = normalize(join(WEB_DIST, rel));
-  if (!filePath.startsWith(normalize(WEB_DIST))) {
-    res.writeHead(403).end();
-    return;
-  }
-  try {
-    if ((await stat(filePath)).isDirectory()) throw new Error("dir");
-    res.writeHead(200, { "Content-Type": MIME[extname(filePath)] ?? "application/octet-stream" });
-    res.end(await readFile(filePath));
-  } catch {
-    // Overlay compositions must 404 rather than fall through to the app shell:
-    // the hyperframes player would load index.html with a 200, find no
-    // timeline, and report a generic timeout that looks like a broken
-    // composition instead of a missing file.
-    if (rel.startsWith("/overlays/")) {
-      res.writeHead(404).end("composition not found");
-      return;
-    }
-    try {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(await readFile(join(WEB_DIST, "index.html")));
-    } catch {
-      res.writeHead(404).end("not found — in dev, use the Vite server (pnpm dev)");
-    }
-  }
-}
-
 // ── browser websocket ─────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
 server.on("upgrade", (req, socket, head) => {
-  const match = /^\/ws\/([A-Za-z0-9_-]+)$/.exec(new URL(req.url ?? "", "http://x").pathname);
+  const url = new URL(req.url ?? "", "http://x");
+  const match = /^\/ws\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
   const session = match?.[1] ? getSession(match[1]) : undefined;
-  if (!session) {
-    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+  const reject = (status: string) => {
+    socket.write(`HTTP/1.1 ${status}\r\n\r\n`);
     socket.destroy();
-    return;
+  };
+  if (!session) return reject("404 Not Found");
+
+  if (hosted) {
+    const origin = (req.headers.origin ?? "").replace(/\/+$/, "");
+    if (config.hosted.allowedOrigins.length > 0 && !config.hosted.allowedOrigins.includes(origin)) {
+      return reject("403 Forbidden");
+    }
+    const ticket = url.searchParams.get("ticket") ?? "";
+    if (!session.owner || !safeEqual(ticket, session.owner.wsTicket)) {
+      return reject("401 Unauthorized");
+    }
   }
+
   wss.handleUpgrade(req, socket, head, (ws) => {
     // One browser per session. The loser of a race (second tab, double click)
     // closes without entering the teardown below, so it cannot stop the
@@ -179,7 +209,9 @@ server.on("upgrade", (req, socket, head) => {
 // ── boot ──────────────────────────────────────────────────────────────────────
 
 server.listen(config.port, () => {
-  console.log(`[server] listening on http://localhost:${config.port}`);
+  console.log(
+    `[server] listening on http://localhost:${config.port} (${hosted ? "hosted" : "local"} mode)`,
+  );
   const missing = missingConfig();
   if (missing.length > 0) {
     console.warn(`[server] ⚠ missing env vars: ${missing.join(", ")} — sessions will not start`);

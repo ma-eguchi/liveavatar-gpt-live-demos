@@ -31,6 +31,29 @@ export const config = {
     avatarId: env("LIVEAVATAR_AVATAR_ID"),
   },
 
+  /**
+   * Hosted mode. When ORCHESTRATOR_SECRET is set, this server stops being a
+   * local toy: /api/session/* only answer the Next.js backend (Bearer
+   * secret), the websocket needs the per-session ticket, and session ends are
+   * written to Supabase. Unset = the original open local starter.
+   */
+  hosted: {
+    secret: env("ORCHESTRATOR_SECRET"),
+    /** Comma-separated browser origins allowed to open the websocket. */
+    allowedOrigins: env("ALLOWED_ORIGINS")
+      .split(",")
+      .map((o) => o.trim().replace(/\/+$/, ""))
+      .filter(Boolean),
+    supabaseUrl: env("SUPABASE_URL").replace(/\/+$/, ""),
+    supabaseServiceRoleKey: env("SUPABASE_SERVICE_ROLE_KEY"),
+  },
+
+  /**
+   * Hard cap on one session's length, in seconds — the cost ceiling for a
+   * public demo. 0 disables it (local default).
+   */
+  maxSessionSeconds: Number(env("MAX_SESSION_SECONDS", "0")) || 0,
+
   gptlive: {
     apiKey: env("OPENAI_API_KEY"),
     model: env("GPT_LIVE_MODEL", "gpt-live-1"),
@@ -55,5 +78,11 @@ export function missingConfig(): string[] {
     ["LIVEAVATAR_API_KEY", config.liveavatar.apiKey],
     ["OPENAI_API_KEY", config.gptlive.apiKey],
   ];
+  if (config.hosted.secret) {
+    required.push(
+      ["SUPABASE_URL", config.hosted.supabaseUrl],
+      ["SUPABASE_SERVICE_ROLE_KEY", config.hosted.supabaseServiceRoleKey],
+    );
+  }
   return required.filter(([, value]) => !value).map(([name]) => name);
 }

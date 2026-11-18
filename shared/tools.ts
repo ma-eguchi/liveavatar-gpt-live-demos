@@ -11,7 +11,7 @@
  *   1. Add its definition here (schema + arg type).
  *   2. Map it to a widget in server/src/tools.ts.
  *   3. If it needs a NEW widget: add the widget to shared/messages.ts and a
- *      renderer in web/src/overlays/. Reusing an existing widget skips step 3.
+ *      renderer in web/lib/avatar/overlays/. Reusing an existing widget skips step 3.
  *
  * Keep every tool's set of REQUIRED argument names distinct. The GPT-Live
  * alpha's first tool-finalize event can arrive with the tool name missing, and

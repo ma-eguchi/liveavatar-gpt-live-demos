@@ -66,6 +66,14 @@ const SILENCE_POLL_MS = 3_000;
 // it every poll tick past the threshold re-prods, which is nagging, not care.
 const CHECKIN_COOLDOWN_MS = 20_000;
 
+export interface SessionOwner {
+  /** practice_sessions.id in Supabase. */
+  practiceSessionId: string;
+  userId: string;
+  /** Single-use secret the browser must present on the websocket upgrade. */
+  wsTicket: string;
+}
+
 export class Session implements GptLiveEvents {
   readonly bridge: GptLiveBridge;
   readonly media: MediaServerLeg;
@@ -107,6 +115,12 @@ export class Session implements GptLiveEvents {
     mediaWsUrl: string,
     /** Called when a leg dies and the session can no longer work. */
     private readonly onDead: (sessionId: string) => void,
+    /**
+     * Who this session belongs to, when the orchestrator runs behind the
+     * Next.js app (hosted mode). Null in local mode. Used to persist the
+     * session's words to Supabase on teardown and to gate the websocket.
+     */
+    readonly owner: SessionOwner | null = null,
   ) {
     this.media = new MediaServerLeg(mediaWsUrl, (msg) => this.log(msg));
     this.bridge = new GptLiveBridge(this, (msg) => this.log(msg));
@@ -139,7 +153,13 @@ export class Session implements GptLiveEvents {
     // delivers the last audio into the media leg before it closes.
     await this.bridge.close();
     this.media.close();
+    // A server-side stop (idle, dead leg, time limit) must reach the browser:
+    // left open, the page would sit "live" in front of a dead avatar. When the
+    // browser started the stop, its socket is already closing and this is a
+    // no-op; its close handler re-enters stopSession, which is idempotent.
+    const frontend = this.frontend;
     this.frontend = null;
+    if (frontend && frontend.readyState === frontend.OPEN) frontend.close(1000, "session ended");
   }
 
   /**
@@ -380,6 +400,16 @@ export class Session implements GptLiveEvents {
     this.log(`${name} leg exited — ending session`);
     this.emit({ type: "error", message: `the ${name} connection dropped` });
     this.onDead(this.sessionId);
+  }
+
+  /** The words shown this session, in teaching order — persisted on stop. */
+  learnedWordsSnapshot(): TermCardProps[] {
+    return this.learnedWords.map((w) => ({ ...w }));
+  }
+
+  /** Tell the browser something went wrong (e.g. the time limit was hit). */
+  notifyError(message: string): void {
+    this.emit({ type: "error", message });
   }
 
   private emit(message: ServerMessage): void {

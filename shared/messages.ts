@@ -39,7 +39,7 @@ export interface LearnedWordsProps {
 /**
  * One on-screen visual instruction. Every tool call the model makes lands in
  * the browser as one of these, so the client renders visuals with a single
- * switch over `widget` (see web/src/overlays/). A new tool that reuses an
+ * switch over `widget` (see web/lib/avatar/overlays/). A new tool that reuses an
  * existing widget costs zero client code.
  *
  * Staging is per-widget, decided by the client — not a model argument: a
