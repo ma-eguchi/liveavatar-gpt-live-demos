@@ -6,6 +6,7 @@
  * production adds.
  */
 
+import { config } from "./config";
 import { stopSession as stopUpstream } from "./liveavatar";
 import { Session } from "./session";
 
@@ -23,6 +24,10 @@ const sessions = new Map<string, Session>();
 
 export function addSession(session: Session): void {
   sessions.set(session.sessionId, session);
+}
+
+export function liveCount(): number {
+  return sessions.size;
 }
 
 export function getSession(sessionId: string): Session | undefined {
@@ -54,8 +59,13 @@ export async function stopAll(): Promise<void> {
 
 setInterval(() => {
   const now = Date.now();
+  const maxMs = config.guard.maxSessionSeconds * 1000;
   for (const session of sessions.values()) {
-    if (now - session.lastActivityAt >= IDLE_TIMEOUT_MS) {
+    if (maxMs > 0 && now - session.startedAt >= maxMs) {
+      // Tell the browser why before the legs go, so the end isn't a mystery.
+      session.end(`time's up — demo sessions are limited to ${Math.round(maxMs / 60_000) || 1} min`);
+      void stopSession(session.sessionId, "max_duration");
+    } else if (now - session.lastActivityAt >= IDLE_TIMEOUT_MS) {
       void stopSession(session.sessionId, "idle");
     }
   }

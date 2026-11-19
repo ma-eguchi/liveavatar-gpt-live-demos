@@ -382,6 +382,17 @@ export class Session implements GptLiveEvents {
     this.onDead(this.sessionId);
   }
 
+  /** Tell the browser why the session is ending, then close its socket. */
+  end(message: string): void {
+    const ws = this.frontend;
+    this.emit({ type: "error", message });
+    try {
+      ws?.close(1000);
+    } catch {
+      /* already gone */
+    }
+  }
+
   private emit(message: ServerMessage): void {
     const ws = this.frontend;
     if (!ws || ws.readyState !== ws.OPEN) return;

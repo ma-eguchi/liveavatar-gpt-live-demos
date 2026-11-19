@@ -43,7 +43,20 @@ export const config = {
      */
     debug: Boolean(env("GPT_LIVE_DEBUG")),
   },
+
+  /** Public-demo guardrails (server/src/guard.ts). All off when unset. */
+  guard: {
+    passcode: env("DEMO_PASSCODE"),
+    maxConcurrent: num("MAX_CONCURRENT_SESSIONS"),
+    maxSessionSeconds: num("MAX_SESSION_SECONDS"),
+    dailyLimit: num("DAILY_SESSION_LIMIT"),
+  },
 };
+
+function num(name: string): number {
+  const n = Number(env(name, "0"));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
 
 /**
  * Names of required vars that are missing. Checked at boot (a warning) and at

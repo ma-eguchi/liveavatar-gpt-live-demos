@@ -213,6 +213,21 @@
           transform 0.15s ease,
           box-shadow 0.15s ease;
       }
+      #passcode {
+        margin-top: 6px;
+        width: min(260px, 100%);
+        background: rgba(255, 255, 255, 0.06);
+        color: inherit;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+        padding: 11px 18px;
+        font-size: 15px;
+        text-align: center;
+      }
+      #passcode:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
       #start:hover:not(:disabled) {
         transform: translateY(-1px);
         box-shadow: 0 10px 36px rgba(var(--glow), 0.45);
@@ -502,8 +517,16 @@
             Have a natural spoken conversation, learn useful English phrases,
             and see each new word appear on screen with its pronunciation and Japanese meaning.
           </p>
+          <input
+            id="passcode"
+            type="password"
+            placeholder="Demo passcode"
+            autocomplete="off"
+            aria-label="Demo passcode"
+            hidden
+          />
           <button id="start">Start practicing</button>
-          <span class="hint">Microphone access required</span>
+          <span class="hint" id="hint">Microphone access required</span>
         </div>
         <div id="loader" aria-hidden="true">
           <span class="orb"></span>

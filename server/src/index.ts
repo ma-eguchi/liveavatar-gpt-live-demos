@@ -11,9 +11,10 @@
  * the browser sees one origin. In production this server also serves the built
  * frontend from web/dist.
  *
- * ⚠ No auth, on purpose — this is a local starter. Before exposing it
- * publicly, gate /api/session/start (any login) and the websocket upgrade
- * (a short-lived ticket minted by /start). See docs/ARCHITECTURE.md.
+ * Public deploys: set DEMO_PASSCODE and the session budget env vars
+ * (server/src/guard.ts). The websocket needs no separate ticket: its path is
+ * the upstream session id, which only a gated /start ever hands out.
+ * Unset, everything is open — fine for localhost, not for a public URL.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -24,7 +25,8 @@ import { WebSocketServer } from "ws";
 import type { ClientMessage } from "../../shared/messages";
 import { config, missingConfig } from "./config";
 import { LiveAvatarApiError, startSession as startUpstream } from "./liveavatar";
-import { addSession, getSession, stopAll, stopSession } from "./registry";
+import { admitStart, passcodeRequired } from "./guard";
+import { addSession, getSession, liveCount, stopAll, stopSession } from "./registry";
 import { Session } from "./session";
 
 const WEB_DIST = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -52,17 +54,32 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     res.writeHead(200).end("ok");
     return;
   }
-  if (req.method === "POST" && path === "/api/session/start") return handleStart(res);
+  if (req.method === "GET" && path === "/api/config") {
+    json(res, 200, {
+      passcode_required: passcodeRequired(),
+      max_session_seconds: config.guard.maxSessionSeconds,
+    });
+    return;
+  }
+  if (req.method === "POST" && path === "/api/session/start") return handleStart(req, res);
   if (req.method === "POST" && path === "/api/session/stop") return handleStop(req, res);
   return serveStatic(res, path);
 }
 
-async function handleStart(res: ServerResponse): Promise<void> {
+async function handleStart(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const missing = missingConfig();
   if (missing.length > 0) {
     json(res, 500, { error: `missing env vars: ${missing.join(", ")} — copy .env.example to .env` });
     return;
   }
+  // Starts in flight count as live: the upstream mint is async, and two
+  // clicks racing past the concurrency check would both bill.
+  const admitted = admitStart(req, liveCount() + pendingStarts);
+  if (!admitted.ok) {
+    json(res, admitted.status, { error: admitted.error });
+    return;
+  }
+  pendingStarts += 1;
   try {
     const upstream = await startUpstream();
     const session = new Session(upstream.sessionId, upstream.wsUrl, (id) => {
@@ -91,8 +108,12 @@ async function handleStart(res: ServerResponse): Promise<void> {
           : "session start failed";
     console.error(`[http] session start failed: ${message}`);
     json(res, 502, { error: message });
+  } finally {
+    pendingStarts -= 1;
   }
 }
+
+let pendingStarts = 0;
 
 async function handleStop(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = (await readJson(req)) as { session_id?: string };
@@ -185,6 +206,12 @@ server.listen(config.port, () => {
     console.warn(`[server] ⚠ missing env vars: ${missing.join(", ")} — sessions will not start`);
     console.warn("[server]   copy .env.example to .env at the repo root and fill it in");
   }
+  const g = config.guard;
+  console.log(
+    `[server] guardrails: passcode ${g.passcode ? "on" : "OFF"}, ` +
+      `concurrent ${g.maxConcurrent || "∞"}, per-session ${g.maxSessionSeconds || "∞"}s, ` +
+      `daily ${g.dailyLimit || "∞"}`,
+  );
 });
 
 // Sessions live in this process; a shutdown is the end of them. Stop them

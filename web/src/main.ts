@@ -28,6 +28,52 @@ const statusEl = document.getElementById("status") as HTMLDivElement;
 const transcriptEl = document.getElementById("transcript") as HTMLDivElement;
 const loaderLabel = document.getElementById("loader-label") as HTMLSpanElement;
 const micBtn = document.getElementById("mic") as HTMLButtonElement;
+const passcodeInput = document.getElementById("passcode") as HTMLInputElement;
+const hintEl = document.getElementById("hint") as HTMLSpanElement;
+
+// ── public-demo gate ──────────────────────────────────────────────────────────
+// The server says whether a passcode is required (DEMO_PASSCODE). A share link
+// can carry it as ?code=… so a recipient just clicks Start; it is moved into
+// sessionStorage and stripped from the address bar so it isn't re-shared.
+const PASSCODE_KEY = "demo-passcode";
+const storage = {
+  get: (): string => {
+    try {
+      return sessionStorage.getItem(PASSCODE_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  },
+  set: (v: string): void => {
+    try {
+      sessionStorage.setItem(PASSCODE_KEY, v);
+    } catch {
+      /* private mode — the field still works */
+    }
+  },
+};
+{
+  const url = new URL(location.href);
+  const fromUrl = url.searchParams.get("code");
+  if (fromUrl) {
+    storage.set(fromUrl);
+    url.searchParams.delete("code");
+    history.replaceState(null, "", url);
+  }
+  passcodeInput.value = storage.get();
+}
+void fetch("/api/config")
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg: { passcode_required?: boolean; max_session_seconds?: number } | null) => {
+    if (!cfg) return;
+    if (cfg.passcode_required && !passcodeInput.value) passcodeInput.hidden = false;
+    const min = Math.round((cfg.max_session_seconds ?? 0) / 60);
+    if (min > 0) hintEl.textContent = `Microphone access required · up to ${min} min per session`;
+  })
+  .catch(() => {});
+passcodeInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") startBtn.click();
+});
 
 type StatusKind = "idle" | "busy" | "live" | "error";
 const setStatus = (msg: string, kind: StatusKind = "idle") => {
@@ -218,7 +264,10 @@ let mic: MicCapture | null = null;
 let generation = 0;
 let stopping = false;
 
+let lastServerError: string | null = null;
+
 async function start(): Promise<void> {
+  lastServerError = null;
   const myGeneration = ++generation;
   const superseded = () => generation !== myGeneration;
 
@@ -235,9 +284,19 @@ async function start(): Promise<void> {
     error?: string;
   };
   try {
-    const response = await fetch("/api/session/start", { method: "POST" });
+    const passcode = passcodeInput.value.trim();
+    const response = await fetch("/api/session/start", {
+      method: "POST",
+      headers: passcode ? { "X-Demo-Passcode": passcode } : {},
+    });
     started = (await response.json()) as typeof started;
+    if (response.status === 401) {
+      // Wrong or stale code (e.g. from an old link): ask for it instead.
+      passcodeInput.hidden = false;
+      passcodeInput.select();
+    }
     if (!response.ok) throw new Error(started.error ?? "could not start a session");
+    if (passcode) storage.set(passcode);
   } catch (err) {
     setStage("idle");
     setStatus(err instanceof Error ? err.message : "could not start a session", "error");
@@ -298,9 +357,13 @@ async function start(): Promise<void> {
       // leave a transcript that claims words nobody heard.
       lastAssistantLine?.classList.add("interrupted");
     },
-    onError: (message) => setStatus(message, "error"),
+    onError: (message) => {
+      lastServerError = message;
+      setStatus(message, "error");
+    },
     onClose: () => {
-      if (!stopping) void stop("the session ended");
+      // Keep the server's reason (e.g. the time limit) rather than a generic one.
+      if (!stopping) void stop(lastServerError ?? "the session ended", lastServerError ? "error" : "idle");
     },
   });
 }

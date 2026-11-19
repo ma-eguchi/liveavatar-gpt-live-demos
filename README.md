@@ -155,6 +155,30 @@ window.__ui({ widget: "term_card", props: { term: "Hello", reading: "he-llo", me
 window.__ui({ widget: "learned_words", props: { title: "Words so far", words: [{ term: "Hello", reading: "he-llo", meaning: "こんにちは" }, { term: "Thank you", reading: "thank-you", meaning: "ありがとう" }] } })
 ```
 
+## Deploying a shareable demo (Render)
+
+Every session bills LiveAvatar and OpenAI, so a public URL needs a lock and a
+budget. Both are built in and switched on by env (`server/src/guard.ts`):
+
+| Env | Effect |
+|---|---|
+| `DEMO_PASSCODE` | `/api/session/start` requires it (wrong 5× → 10-min lockout per IP) |
+| `MAX_CONCURRENT_SESSIONS` | live sessions at once — `1` is right for a demo |
+| `MAX_SESSION_SECONDS` | hard cap per session; the browser is told why it ended |
+| `DAILY_SESSION_LIMIT` | starts per UTC day (in-memory; a restart resets it) |
+
+All unset = open, the local-dev default. The server logs which are on at boot.
+
+1. Render → **New → Blueprint** → pick this repo. `render.yaml` builds the web
+   app and runs one Node service that serves it plus `/api` and `/ws`.
+2. Fill in `LIVEAVATAR_API_KEY`, `OPENAI_API_KEY`, `DEMO_PASSCODE` when asked.
+   The blueprint already sets 1 concurrent / 300 s / 20 per day.
+3. Share `https://<your-service>.onrender.com/?code=<PASSCODE>` — the code is
+   moved out of the address bar on load. Without it, the page shows a field.
+
+Also set a spend cap on both provider accounts; the guardrails bound usage,
+the provider cap bounds the bill.
+
 ## Production notes
 
 This is a starter, not a deployment. Before exposing it publicly: add auth on

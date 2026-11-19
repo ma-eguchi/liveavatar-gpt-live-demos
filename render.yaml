@@ -1,0 +1,27 @@
+# Render Blueprint — one web service that serves web/dist and the API/WS.
+# Dashboard → New → Blueprint → pick this repo. Render asks for the
+# `sync: false` values on first deploy; they are never committed.
+services:
+  - type: web
+    name: liveavatar-english-coach
+    runtime: node
+    plan: starter # websockets work on free too, but free instances sleep (≈1 min cold start)
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    startCommand: pnpm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: LIVEAVATAR_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEMO_PASSCODE
+        sync: false
+      # Budget: one caller at a time, 5 minutes each, 20 sessions a day.
+      - key: MAX_CONCURRENT_SESSIONS
+        value: "1"
+      - key: MAX_SESSION_SECONDS
+        value: "300"
+      - key: DAILY_SESSION_LIMIT
+        value: "20"
